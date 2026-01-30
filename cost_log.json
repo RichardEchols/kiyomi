@@ -1,0 +1,236 @@
+[
+  {
+    "timestamp": "2026-01-28T11:28:39.035793-05:00",
+    "model": "claude-opus-4-5",
+    "input_tokens": 724,
+    "output_tokens": 310,
+    "cost": 0.03411,
+    "project": "Keiko Bot",
+    "task_type": "chat"
+  },
+  {
+    "timestamp": "2026-01-28T11:35:22.099968-05:00",
+    "model": "claude-opus-4-5",
+    "input_tokens": 686,
+    "output_tokens": 335,
+    "cost": 0.035415,
+    "project": null,
+    "task_type": "chat"
+  },
+  {
+    "timestamp": "2026-01-28T11:52:07.373330-05:00",
+    "model": "claude-opus-4-5",
+    "input_tokens": 666,
+    "output_tokens": 53,
+    "cost": 0.013965,
+    "project": null,
+    "task_type": "chat"
+  },
+  {
+    "timestamp": "2026-01-28T11:57:33.789032-05:00",
+    "model": "claude-opus-4-5",
+    "input_tokens": 624,
+    "output_tokens": 185,
+    "cost": 0.023235,
+    "project": null,
+    "task_type": "chat"
+  },
+  {
+    "timestamp": "2026-01-28T12:05:26.357294-05:00",
+    "model": "claude-opus-4-5",
+    "input_tokens": 973,
+    "output_tokens": 165,
+    "cost": 0.02697,
+    "project": "True Podcasts",
+    "task_type": "chat"
+  },
+  {
+    "timestamp": "2026-01-28T12:14:06.139067-05:00",
+    "model": "claude-opus-4-5",
+    "input_tokens": 721,
+    "output_tokens": 361,
+    "cost": 0.03789,
+    "project": null,
+    "task_type": "chat"
+  },
+  {
+    "timestamp": "2026-01-28T12:16:44.721913-05:00",
+    "model": "claude-opus-4-5",
+    "input_tokens": 706,
+    "output_tokens": 62,
+    "cost": 0.01524,
+    "project": null,
+    "task_type": "chat"
+  },
+  {
+    "timestamp": "2026-01-28T12:17:19.203556-05:00",
+    "model": "claude-opus-4-5",
+    "input_tokens": 661,
+    "output_tokens": 113,
+    "cost": 0.01839,
+    "project": null,
+    "task_type": "chat"
+  },
+  {
+    "timestamp": "2026-01-30T11:57:00.864409-05:00",
+    "model": "claude-opus-4-5",
+    "input_tokens": 675,
+    "output_tokens": 41,
+    "cost": 0.0132,
+    "project": null,
+    "task_type": "chat"
+  },
+  {
+    "timestamp": "2026-01-30T12:25:54.408749-05:00",
+    "model": "claude-opus-4-5",
+    "input_tokens": 763,
+    "output_tokens": 272,
+    "cost": 0.031845,
+    "project": null,
+    "task_type": "chat"
+  },
+  {
+    "timestamp": "2026-01-30T12:33:46.187439-05:00",
+    "model": "claude-opus-4-5",
+    "input_tokens": 651,
+    "output_tokens": 304,
+    "cost": 0.032565,
+    "project": null,
+    "task_type": "chat"
+  },
+  {
+    "timestamp": "2026-01-30T12:34:44.378661-05:00",
+    "model": "claude-opus-4-5",
+    "input_tokens": 760,
+    "output_tokens": 127,
+    "cost": 0.020925,
+    "project": null,
+    "task_type": "chat"
+  },
+  {
+    "timestamp": "2026-01-30T12:36:49.109412-05:00",
+    "model": "claude-opus-4-5",
+    "input_tokens": 745,
+    "output_tokens": 295,
+    "cost": 0.0333,
+    "project": null,
+    "task_type": "chat"
+  },
+  {
+    "timestamp": "2026-01-30T12:48:51.084250-05:00",
+    "model": "claude-opus-4-5",
+    "input_tokens": 2506,
+    "output_tokens": 943,
+    "cost": 0.108315,
+    "project": null,
+    "task_type": "chat"
+  },
+  {
+    "timestamp": "2026-01-30T12:51:30.918820-05:00",
+    "model": "claude-opus-4-5",
+    "input_tokens": 2623,
+    "output_tokens": 904,
+    "cost": 0.107145,
+    "project": null,
+    "task_type": "chat"
+  },
+  {
+    "timestamp": "2026-01-30T13:05:33.594560-05:00",
+    "model": "claude-opus-4-5",
+    "input_tokens": 2742,
+    "output_tokens": 385,
+    "cost": 0.070005,
+    "project": null,
+    "task_type": "chat"
+  },
+  {
+    "timestamp": "2026-01-30T13:18:25.736344-05:00",
+    "model": "claude-opus-4-5",
+    "input_tokens": 2545,
+    "output_tokens": 285,
+    "cost": 0.05955,
+    "project": null,
+    "task_type": "chat"
+  },
+  {
+    "timestamp": "2026-01-30T13:21:24.913530-05:00",
+    "model": "claude-opus-4-5",
+    "input_tokens": 2706,
+    "output_tokens": 210,
+    "cost": 0.05634,
+    "project": null,
+    "task_type": "chat"
+  },
+  {
+    "timestamp": "2026-01-30T13:22:55.882377-05:00",
+    "model": "claude-opus-4-5",
+    "input_tokens": 2740,
+    "output_tokens": 151,
+    "cost": 0.052425,
+    "project": null,
+    "task_type": "chat"
+  },
+  {
+    "timestamp": "2026-01-30T15:27:03.209921-05:00",
+    "model": "claude-opus-4-5",
+    "input_tokens": 2702,
+    "output_tokens": 62,
+    "cost": 0.04518,
+    "project": null,
+    "task_type": "chat"
+  },
+  {
+    "timestamp": "2026-01-30T15:31:40.577198-05:00",
+    "model": "claude-opus-4-5",
+    "input_tokens": 2645,
+    "output_tokens": 268,
+    "cost": 0.059775,
+    "project": null,
+    "task_type": "chat"
+  },
+  {
+    "timestamp": "2026-01-30T15:38:10.320328-05:00",
+    "model": "claude-opus-4-5",
+    "input_tokens": 2628,
+    "output_tokens": 238,
+    "cost": 0.05727,
+    "project": null,
+    "task_type": "chat"
+  },
+  {
+    "timestamp": "2026-01-30T15:40:59.868102-05:00",
+    "model": "claude-opus-4-5",
+    "input_tokens": 2967,
+    "output_tokens": 293,
+    "cost": 0.06648,
+    "project": null,
+    "task_type": "chat"
+  },
+  {
+    "timestamp": "2026-01-30T15:45:52.819630-05:00",
+    "model": "claude-opus-4-5",
+    "input_tokens": 3022,
+    "output_tokens": 381,
+    "cost": 0.073905,
+    "project": null,
+    "task_type": "chat"
+  },
+  {
+    "timestamp": "2026-01-30T15:46:11.445352-05:00",
+    "model": "claude-opus-4-5",
+    "input_tokens": 3090,
+    "output_tokens": 366,
+    "cost": 0.0738,
+    "project": null,
+    "task_type": "chat"
+  },
+  {
+    "timestamp": "2026-01-30T15:49:00.136601-05:00",
+    "model": "claude-opus-4-5",
+    "input_tokens": 2822,
+    "output_tokens": 28,
+    "cost": 0.04443,
+    "project": null,
+    "task_type": "chat"
+  }
+]

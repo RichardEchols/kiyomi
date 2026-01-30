@@ -1,0 +1,8 @@
+{
+  "name": "richard-delivery-workflow",
+  "version": "1.0.0",
+  "description": "How to properly deliver work and communicate with Richard",
+  "keywords": ["workflow", "communication", "telegram", "delivery", "approval"],
+  "author": "Brock",
+  "license": "MIT"
+}

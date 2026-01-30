@@ -1,0 +1,29 @@
+# Environment
+.env
+*.env
+
+# Logs
+logs/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+.venv/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Memory files (personal data)
+memory/*.md
+
+# Temp files
+temp/
+screenshots/

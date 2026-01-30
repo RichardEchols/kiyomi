@@ -1,0 +1,8 @@
+{
+  "name": "thumbnail-generation",
+  "version": "1.0.0",
+  "description": "Generate YouTube thumbnails using AI image tools with best practices and templates",
+  "keywords": ["thumbnail", "youtube", "image", "ai", "generation", "design", "fal", "flux"],
+  "author": "Brock",
+  "license": "MIT"
+}

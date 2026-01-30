@@ -1,0 +1,12 @@
+{
+  "timestamp": "2026-01-30T18:18:40.438010-05:00",
+  "healthy": true,
+  "issues": [],
+  "metrics": {
+    "memory_mb": 113.47,
+    "cpu_percent": 0.1,
+    "uptime_hours": 0.5,
+    "log_size_mb": 0.47,
+    "idle_minutes": 30.1
+  }
+}

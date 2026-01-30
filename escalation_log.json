@@ -1,0 +1,11 @@
+[
+  {
+    "type": "unknown",
+    "severity": "low",
+    "title": "This error originated either by throwing inside of an async function without a catch block, or by re",
+    "project": null,
+    "escalated": false,
+    "resolved": false,
+    "timestamp": "2026-01-29T01:14:47.903399-05:00"
+  }
+]

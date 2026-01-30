@@ -1,0 +1,14 @@
+{
+  "daily": {
+    "alert_type": "daily",
+    "threshold": 10.0,
+    "enabled": true,
+    "last_triggered": null
+  },
+  "per_task": {
+    "alert_type": "per_task",
+    "threshold": 1.0,
+    "enabled": true,
+    "last_triggered": null
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "scripture-nwt-lookup",
+  "version": "1.0.0",
+  "description": "Look up exact New World Translation scripture text from jw.org",
+  "keywords": ["scripture", "bible", "nwt", "jw", "jehovah"],
+  "author": "Brock",
+  "license": "MIT"
+}
