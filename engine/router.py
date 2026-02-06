@@ -59,62 +59,47 @@ def classify_message(text: str) -> str:
 
 def pick_model(task_type: str, config: dict) -> tuple[str, str]:
     """Pick the best model for this task.
-    
+
     Returns: (provider, model_name)
-    
-    Considers both API and CLI providers.
-    CLI providers are preferred if available (user's existing subscriptions).
+
+    Always respects the user's configured provider first.
+    Only falls back to other providers if the chosen one isn't available.
     """
     provider = config.get("provider", "gemini")
-    
-    # Check for CLI providers first (they use existing subscriptions)
-    from engine.config import detect_available_clis
+
+    # Check for CLI providers
+    from engine.config import detect_available_clis, get_model
     available_clis = detect_available_clis()
-    
-    # Check API providers
-    has_gemini = bool(config.get("gemini_key"))
-    has_anthropic = bool(config.get("anthropic_key"))
-    has_openai = bool(config.get("openai_key"))
-    
-    if task_type == 'simple':
-        # Simple tasks → fastest available (CLI preferred)
-        if "gemini-cli" in available_clis:
-            return ('gemini-cli', 'gemini')
-        if "claude-cli" in available_clis:
-            return ('claude-cli', 'claude')
-        if has_gemini:
-            return ('gemini', 'gemini-2.0-flash')
-        if has_openai:
-            return ('openai', 'gpt-4o')
-        if has_anthropic:
-            return ('anthropic', 'claude-sonnet-4-20250514')
-    
-    elif task_type == 'building':
-        # Complex tasks → best quality (Claude preferred)
-        if "claude-cli" in available_clis:
-            return ('claude-cli', 'claude')
-        if has_anthropic:
-            return ('anthropic', 'claude-sonnet-4-20250514')
-        if "gemini-cli" in available_clis:
-            return ('gemini-cli', 'gemini')
-        if has_gemini:
-            return ('gemini', 'gemini-2.0-flash')
-        if has_openai:
-            return ('openai', 'gpt-4o')
-    
-    else:  # writing
-        # Writing tasks → good balance (CLI preferred)
-        if "claude-cli" in available_clis:
-            return ('claude-cli', 'claude')
-        if "gemini-cli" in available_clis:
-            return ('gemini-cli', 'gemini')
-        if has_gemini:
-            return ('gemini', 'gemini-2.0-flash')
-        if has_openai:
-            return ('openai', 'gpt-4o')
-        if has_anthropic:
-            return ('anthropic', 'claude-sonnet-4-20250514')
-    
-    # Fallback to configured provider
-    from engine.config import get_model
+
+    # If user chose a CLI provider and it's available, use it
+    if provider in available_clis:
+        cli_name = provider.replace("-cli", "")
+        return (provider, cli_name)
+
+    # If user chose an API provider with a key, use it
+    api_key_map = {"gemini": "gemini_key", "anthropic": "anthropic_key", "openai": "openai_key"}
+    if provider in api_key_map and config.get(api_key_map[provider]):
+        return (provider, get_model(config))
+
+    # User's chosen provider not available — fall back intelligently
+    # CLI fallback order depends on task type
+    if task_type == 'building':
+        cli_order = ["claude-cli", "gemini-cli", "codex-cli"]
+    else:
+        cli_order = ["claude-cli", "gemini-cli", "codex-cli"]
+
+    for cli in cli_order:
+        if cli in available_clis:
+            cli_name = cli.replace("-cli", "")
+            return (cli, cli_name)
+
+    # API fallback
+    if config.get("anthropic_key"):
+        return ('anthropic', 'claude-sonnet-4-20250514')
+    if config.get("gemini_key"):
+        return ('gemini', 'gemini-2.0-flash')
+    if config.get("openai_key"):
+        return ('openai', 'gpt-4o')
+
+    # Last resort
     return (provider, get_model(config))

@@ -26,6 +26,7 @@ def _resource_path(relative: str) -> Path:
 APP_DIR = _resource_path(".")
 ENGINE_DIR = _resource_path("engine")
 ONBOARDING_DIR = _resource_path("onboarding")
+DASHBOARD_DIR = _resource_path("dashboard")
 CONFIG_DIR = Path.home() / ".kiyomi"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 LOGS_DIR = CONFIG_DIR / "logs"
@@ -254,6 +255,169 @@ class OnboardingHandler(BaseHTTPRequestHandler):
         self.send_header('Content-Length', str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    def _send_dashboard_file(self, filepath: str):
+        """Serve a file from the dashboard directory."""
+        full_path = DASHBOARD_DIR / filepath
+        if not full_path.exists() or not full_path.is_file():
+            self.send_error(404, "File not found")
+            return
+        data = full_path.read_bytes()
+        ext = Path(filepath).suffix.lower()
+        ct = self.CONTENT_TYPES.get(ext, 'application/octet-stream')
+        self.send_response(200)
+        self.send_header('Content-Type', ct)
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _handle_dashboard_data(self):
+        """Aggregate all user data for the life dashboard."""
+        import re as _re
+        from datetime import datetime as _dt, timedelta as _td
+
+        data = {
+            "config": {},
+            "memory": {},
+            "health": {},
+            "budget": {},
+            "tasks": {},
+            "habits": {},
+            "relationships": {},
+            "reminders": {},
+        }
+
+        # --- Config ---
+        try:
+            if CONFIG_FILE.exists():
+                with open(CONFIG_FILE) as f:
+                    cfg = json.load(f)
+                data["config"] = {
+                    "name": cfg.get("name", ""),
+                    "timezone": cfg.get("timezone", "UTC"),
+                    "provider": cfg.get("provider", ""),
+                }
+        except Exception:
+            pass
+
+        # --- Memory ---
+        try:
+            memory_dir = CONFIG_DIR / "memory"
+            categories = {
+                "identity": "Identity", "family": "Family",
+                "work": "Work", "health": "Health",
+                "preferences": "Preferences", "goals": "Goals",
+                "schedule": "Schedule", "other": "Other",
+            }
+            cat_counts = {}
+            total_facts = 0
+            for key, display in categories.items():
+                fpath = memory_dir / f"{key}.md"
+                count = 0
+                if fpath.exists():
+                    for line in fpath.read_text(encoding="utf-8", errors="replace").splitlines():
+                        if line.strip().startswith("- "):
+                            count += 1
+                cat_counts[key] = {"name": display, "count": count}
+                total_facts += count
+
+            # Count conversations this week
+            convos_dir = memory_dir / "conversations"
+            convos_week = 0
+            if convos_dir.exists():
+                cutoff = _dt.now() - _td(days=7)
+                for f in convos_dir.iterdir():
+                    if f.suffix == ".md" and f.stat().st_mtime >= cutoff.timestamp():
+                        convos_week += 1
+
+            data["memory"] = {
+                "total_facts": total_facts,
+                "categories": cat_counts,
+                "conversations_this_week": convos_week,
+            }
+        except Exception:
+            pass
+
+        # --- Health ---
+        try:
+            health_file = CONFIG_DIR / "skills" / "health" / "data.json"
+            if health_file.exists():
+                with open(health_file) as f:
+                    data["health"] = json.load(f)
+            else:
+                data["health"] = {}
+        except Exception:
+            pass
+
+        # --- Budget / Financial Intelligence ---
+        try:
+            budget_file = CONFIG_DIR / "skills" / "budget" / "data.json"
+            fi_file = CONFIG_DIR / "skills" / "financial_intelligence" / "data.json"
+            if budget_file.exists():
+                with open(budget_file) as f:
+                    data["budget"] = json.load(f)
+            elif fi_file.exists():
+                with open(fi_file) as f:
+                    data["budget"] = json.load(f)
+            else:
+                data["budget"] = {}
+        except Exception:
+            pass
+
+        # --- Tasks ---
+        try:
+            tasks_file = CONFIG_DIR / "skills" / "tasks" / "data.json"
+            if tasks_file.exists():
+                with open(tasks_file) as f:
+                    raw = json.load(f)
+                tasks_list = raw.get("tasks", [])
+                open_tasks = [t for t in tasks_list if not t.get("done")]
+                done_tasks = [t for t in tasks_list if t.get("done")]
+                data["tasks"] = {
+                    "open": open_tasks,
+                    "completed": done_tasks,
+                    "open_count": len(open_tasks),
+                    "completed_count": len(done_tasks),
+                }
+            else:
+                data["tasks"] = {"open": [], "completed": [], "open_count": 0, "completed_count": 0}
+        except Exception:
+            pass
+
+        # --- Habits ---
+        try:
+            habits_file = CONFIG_DIR / "habits.json"
+            if habits_file.exists():
+                with open(habits_file) as f:
+                    data["habits"] = json.load(f)
+            else:
+                data["habits"] = {}
+        except Exception:
+            pass
+
+        # --- Relationships ---
+        try:
+            rels_file = CONFIG_DIR / "relationships.json"
+            if rels_file.exists():
+                with open(rels_file) as f:
+                    data["relationships"] = json.load(f)
+            else:
+                data["relationships"] = {}
+        except Exception:
+            pass
+
+        # --- Reminders ---
+        try:
+            rem_file = CONFIG_DIR / "reminders.json"
+            if rem_file.exists():
+                with open(rem_file) as f:
+                    data["reminders"] = json.load(f)
+            else:
+                data["reminders"] = {}
+        except Exception:
+            pass
+
+        self._send_json(200, data)
     
     def do_GET(self):
         """Handle GET — serve files + config save endpoint."""
@@ -261,7 +425,20 @@ class OnboardingHandler(BaseHTTPRequestHandler):
         import base64
         parsed = urlparse(self.path)
         path = parsed.path
-        
+
+        # Dashboard API
+        if path == "/api/dashboard/data":
+            self._handle_dashboard_data()
+            return
+
+        # Dashboard static files
+        if path == "/dashboard" or path == "/dashboard/":
+            self._send_dashboard_file("index.html")
+            return
+        if path.startswith("/dashboard/"):
+            self._send_dashboard_file(path[len("/dashboard/"):])
+            return
+
         # API: Bot pool status (how many pre-made bots available)
         if path == "/api/telegram/pool":
             try:
@@ -782,6 +959,7 @@ def main():
                 self._status_item = rumps.MenuItem("Status: Starting...", callback=None)
                 self.menu = [
                     rumps.MenuItem("Open Telegram", callback=self._open_telegram),
+                    rumps.MenuItem("Life Dashboard", callback=self._open_dashboard),
                     rumps.MenuItem("Settings", callback=self._open_settings),
                     None,  # Separator
                     self._status_item,
@@ -794,7 +972,14 @@ def main():
             
             def _open_telegram(self, _):
                 open_telegram()
-            
+
+            def _open_dashboard(self, _):
+                url = f"http://127.0.0.1:{self._port}/dashboard"
+                try:
+                    subprocess.Popen(["open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except Exception:
+                    webbrowser.open(url)
+
             def _open_settings(self, _):
                 open_onboarding(self._port)
             
