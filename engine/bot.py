@@ -1393,17 +1393,6 @@ async def cmd_apps(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def _build_app():
     """Build the Telegram application with all handlers."""
-    # License check — quick cached check only (full check already ran in app.py)
-    try:
-        from license import load_license, quick_revalidate, get_machine_uuid
-        license_data = load_license()
-        if not license_data or not license_data.get('key'):
-            logger.error("No license found. Please purchase Kiyomi at https://kiyomibot.ai")
-            return None
-    except Exception as e:
-        logger.error(f"License check failed: {e}")
-        return None
-
     config = load_config()
     token = config.get("telegram_token", "")
     

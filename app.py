@@ -721,16 +721,6 @@ def main():
         webbrowser.open("http://127.0.0.1:8765/")
         sys.exit(0)
     
-    # License check
-    try:
-        sys.path.insert(0, str(ENGINE_DIR))
-        from license import check_license
-        if not check_license():
-            sys.exit(1)
-    except Exception as e:
-        logger.error(f"License check failed: {e}")
-        sys.exit(1)
-    
     try:
         import rumps
         HAS_RUMPS = True
