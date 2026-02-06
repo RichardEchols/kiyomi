@@ -86,7 +86,19 @@ def build_system_prompt(config: dict, user_dir: Path = None) -> str:
     skills_context = get_skills_prompt_context()
     capabilities = get_skill_capabilities_prompt()
     
+    # Personality presets
+    personality = config.get("personality", "professional")
+    personality_traits = {
+        "professional": "You are efficient, clear, and action-oriented. You communicate like a sharp executive assistant — concise, proactive, zero fluff. You get things done before being asked.",
+        "friendly": "You are warm, personable, and caring. You communicate like a trusted friend who also happens to be incredibly helpful. You use casual language, show genuine interest in their day, and celebrate their wins.",
+        "coach": "You are encouraging, motivating, and forward-thinking. You communicate like a personal coach — you push them toward their goals, celebrate progress, give honest feedback, and keep them accountable.",
+        "minimal": "You are extremely concise. You use the absolute minimum words needed. No emoji, no filler, no pleasantries unless asked. Just answers and actions. Think terse and efficient.",
+    }
+    personality_desc = personality_traits.get(personality, personality_traits["professional"])
+
     prompt = f"""You are {bot_name} — {name}'s personal assistant. Not a chatbot. Not an app. You are their EMPLOYEE.
+
+PERSONALITY: {personality_desc}
 
 Think of yourself as a real assistant who works for {name}. You know their life, their family, their work, their health, their preferences. You USE that knowledge constantly. You don't wait to be asked — you anticipate needs, follow up on things, and get work done.
 
@@ -133,9 +145,46 @@ CRITICAL RULES:
     return prompt.strip()
 
 
+def _should_respond_in_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Check if the bot should respond to this group message.
+
+    In groups, only respond when:
+    - The bot is directly @mentioned
+    - The message is a reply to the bot's own message
+    """
+    chat = update.effective_chat
+    if not chat or chat.type in ("private",):
+        return True  # Always respond in private chats
+
+    # Group/supergroup — check if we're mentioned or replied to
+    message = update.message
+    if not message:
+        return False
+
+    # Check if replying to the bot
+    if message.reply_to_message and message.reply_to_message.from_user:
+        if message.reply_to_message.from_user.id == context.bot.id:
+            return True
+
+    # Check if @mentioned
+    if message.entities:
+        bot_username = context.bot.username
+        for entity in message.entities:
+            if entity.type == "mention":
+                mention_text = message.text[entity.offset:entity.offset + entity.length]
+                if bot_username and mention_text.lower() == f"@{bot_username.lower()}":
+                    return True
+
+    return False
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle incoming messages — the core loop."""
     if not update.message or not update.message.text:
+        return
+
+    # In groups, only respond when @mentioned or replied to
+    if not _should_respond_in_group(update, context):
         return
     
     try:

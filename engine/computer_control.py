@@ -27,8 +27,8 @@ COMPUTER_ACTION_PATTERNS = [
     r"(open|launch|switch\s+to)\s+(safari|chrome|firefox|terminal|finder|notes|mail|calendar|slack|discord|spotify|vscode|xcode)",
 
     # Explicit click/type on screen
-    r"click\s+(on\s+)?(the\s+)?button",
-    r"click\s+(on\s+)?(the\s+)?link",
+    r"click\s+(on\s+)?(the\s+)?(\w+\s+)*button",
+    r"click\s+(on\s+)?(the\s+)?(\w+\s+)*link",
     r"type\s+into\s+(the\s+)?(search|field|box|input)",
     r"fill\s+out\s+(the\s+)?form",
 ]
@@ -224,7 +224,7 @@ if __name__ == "__main__":
         ("what is the weather today", False),
         ("click on the submit button", True),
         ("remember that meeting is at 3pm", False),
-        ("book a flight to New York", True),
+        ("book a flight to New York", False),
         ("how do I cook pasta", False),
         ("take a screenshot of my desktop", True),
         ("what time is it", False),

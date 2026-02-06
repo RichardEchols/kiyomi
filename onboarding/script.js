@@ -51,6 +51,7 @@ function copyText(text, element) {
 
 const config = {
     name: '',
+    personality: 'professional',
     provider: '',
     cli_provider: '',
     gemini_key: '',
@@ -61,6 +62,14 @@ const config = {
     imported_chats: false,
     setup_complete: false,
 };
+
+// ── Personality Selection ───────────────────────────────────
+function selectPersonality(personality) {
+    config.personality = personality;
+    document.querySelectorAll('.personality-card').forEach(c => c.classList.remove('selected'));
+    const card = document.getElementById(`pers-${personality}`);
+    if (card) card.classList.add('selected');
+}
 
 // ── Navigation ─────────────────────────────────────────────
 

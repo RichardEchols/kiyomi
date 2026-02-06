@@ -267,6 +267,38 @@ h1 {
 }
 
 /* Provider Grid */
+/* Personality picker */
+.personality-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+    margin-top: 8px;
+}
+
+.personality-card {
+    border: 2px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 10px;
+    cursor: pointer;
+    transition: all var(--transition);
+    text-align: center;
+}
+
+.personality-card:hover {
+    border-color: var(--pink-light);
+    transform: translateY(-1px);
+    box-shadow: var(--shadow);
+}
+
+.personality-card.selected {
+    border-color: var(--pink);
+    background: var(--pink-light);
+}
+
+.pers-emoji { font-size: 24px; margin-bottom: 4px; }
+.pers-name { font-weight: 600; font-size: 14px; color: var(--text); }
+.pers-desc { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
+
 .provider-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);

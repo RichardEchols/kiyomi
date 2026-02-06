@@ -18,6 +18,33 @@
                     <label for="user-name">What's your name?</label>
                     <input type="text" id="user-name" placeholder="e.g. Sarah" autocomplete="given-name" autofocus>
                 </div>
+
+                <div class="input-group" style="margin-top: 20px;">
+                    <label>How should I talk to you?</label>
+                    <div class="personality-grid" id="personality-grid">
+                        <div class="personality-card selected" onclick="selectPersonality('professional')" id="pers-professional">
+                            <div class="pers-emoji">💼</div>
+                            <div class="pers-name">Professional</div>
+                            <div class="pers-desc">Clear, efficient, gets things done</div>
+                        </div>
+                        <div class="personality-card" onclick="selectPersonality('friendly')" id="pers-friendly">
+                            <div class="pers-emoji">😊</div>
+                            <div class="pers-name">Friendly</div>
+                            <div class="pers-desc">Warm, casual, like a good friend</div>
+                        </div>
+                        <div class="personality-card" onclick="selectPersonality('coach')" id="pers-coach">
+                            <div class="pers-emoji">🏆</div>
+                            <div class="pers-name">Coach</div>
+                            <div class="pers-desc">Encouraging, pushes you forward</div>
+                        </div>
+                        <div class="personality-card" onclick="selectPersonality('minimal')" id="pers-minimal">
+                            <div class="pers-emoji">⚡</div>
+                            <div class="pers-name">Minimal</div>
+                            <div class="pers-desc">Short, direct, no fluff</div>
+                        </div>
+                    </div>
+                </div>
+
                 <button class="btn-primary" onclick="nextStep(1)" id="btn-step1">Continue</button>
             </div>
         </div>
