@@ -112,7 +112,7 @@ async def _try_openai_whisper(audio_path: Path) -> Tuple[bool, str]:
         import openai
 
         # Load API key from env
-        env_file = Path("/Users/richardecholsai2/Documents/Apps/.env.local")
+        env_file = Path("/Users/richardechols/Apps/.env.local")
         api_key = None
 
         if env_file.exists():

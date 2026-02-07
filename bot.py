@@ -1762,7 +1762,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             transcription = ""
             try:
                 whisper_result = subprocess.run(
-                    ["/Users/richardecholsai2/Library/Python/3.9/bin/whisper", str(voice_path), "--model", "base", "--output_format", "txt", "--output_dir", str(voice_path.parent)],
+                    ["/Library/Frameworks/Python.framework/Versions/3.13/bin/whisper", str(voice_path), "--model", "base", "--output_format", "txt", "--output_dir", str(voice_path.parent)],
                     capture_output=True, text=True, timeout=120
                 )
                 txt_path = voice_path.with_suffix(".txt")
@@ -1773,7 +1773,8 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 # Whisper not installed — try OpenAI API as fallback
                 try:
                     import openai
-                    client = openai.OpenAI(api_key="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")
+                    openai_key = os.getenv("OPENAI_API_KEY", "")
+                    client = openai.OpenAI(api_key=openai_key)
                     with open(voice_path, "rb") as audio_file:
                         resp = client.audio.transcriptions.create(model="whisper-1", file=audio_file)
                     transcription = resp.text

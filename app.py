@@ -10,6 +10,7 @@ import json
 import signal
 import subprocess
 import threading
+import time
 import webbrowser
 import logging
 from pathlib import Path
@@ -426,6 +427,31 @@ class OnboardingHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
+        # Agent API: status
+        if path == "/api/agent/status":
+            self._handle_agent_status()
+            return
+
+        # Agent API: info
+        if path == "/api/agent/info":
+            self._handle_agent_info()
+            return
+
+        # Agent API: team
+        if path == "/api/agent/team":
+            self._handle_agent_team()
+            return
+
+        # Webhooks API: list registered webhooks
+        if path == "/api/webhooks":
+            self._handle_list_webhooks()
+            return
+
+        # Cron API: list active cron tasks
+        if path == "/api/crons":
+            self._handle_list_crons()
+            return
+
         # Dashboard API
         if path == "/api/dashboard/data":
             self._handle_dashboard_data()
@@ -573,9 +599,246 @@ class OnboardingHandler(BaseHTTPRequestHandler):
             self._handle_cli_install()
         elif self.path == "/api/cli/auth":
             self._handle_cli_auth()
+        elif self.path == "/api/agent/task":
+            self._handle_agent_task()
+        elif self.path == "/api/agent/result":
+            self._handle_agent_result()
+        elif self.path.startswith("/api/webhook/"):
+            self._handle_incoming_webhook()
         else:
             self._send_json(404, {"error": "Not found"})
     
+    # --- Agent API Handlers ---
+
+    def _handle_agent_status(self):
+        """Report this agent's status."""
+        try:
+            from engine.gateway import get_registry
+            registry = get_registry()
+            self_info = registry.self_agent if registry else None
+            self._send_json(200, {
+                "status": "online",
+                "agent_id": self_info.agent_id if self_info else "kiyomi",
+                "name": self_info.name if self_info else "Kiyomi",
+                "uptime": time.time(),
+            })
+        except Exception as e:
+            self._send_json(200, {"status": "online", "error": str(e)})
+
+    def _handle_agent_info(self):
+        """Report this agent's identity and capabilities."""
+        try:
+            from engine.gateway import get_registry
+            registry = get_registry()
+            if registry and registry.self_agent:
+                self._send_json(200, registry.self_agent.to_dict())
+            else:
+                self._send_json(200, {"agent_id": "kiyomi", "name": "Kiyomi"})
+        except Exception as e:
+            self._send_json(500, {"error": str(e)})
+
+    def _handle_agent_team(self):
+        """List all agents in the team."""
+        try:
+            from engine.gateway import get_registry
+            registry = get_registry()
+            if registry:
+                self._send_json(200, {"agents": registry.list_agents()})
+            else:
+                self._send_json(200, {"agents": []})
+        except Exception as e:
+            self._send_json(500, {"error": str(e)})
+
+    def _handle_agent_task(self):
+        """Receive a task from another agent."""
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(content_length)
+        try:
+            task_data = json.loads(body)
+            from engine.gateway import get_communicator
+            comm = get_communicator()
+            if not comm:
+                self._send_json(503, {"status": "error", "error": "Gateway not initialized"})
+                return
+
+            # Schedule async execution (can't await in sync handler)
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(comm.handle_incoming_task(task_data))
+                else:
+                    loop.run_until_complete(comm.handle_incoming_task(task_data))
+            except RuntimeError:
+                # No event loop in this thread — create one
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(comm.handle_incoming_task(task_data))
+
+            self._send_json(200, {"status": "accepted", "task_id": task_data.get("task_id", "")})
+        except Exception as e:
+            logger.error(f"Agent task handler error: {e}")
+            self._send_json(500, {"status": "error", "error": str(e)})
+
+    def _handle_agent_result(self):
+        """Receive a task result callback from another agent."""
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(content_length)
+        try:
+            result_data = json.loads(body)
+            from engine.gateway import get_communicator
+            comm = get_communicator()
+            if comm:
+                comm.handle_result(
+                    result_data.get("task_id", ""),
+                    result_data.get("result", "")
+                )
+            self._send_json(200, {"status": "received"})
+        except Exception as e:
+            logger.error(f"Agent result handler error: {e}")
+            self._send_json(500, {"status": "error", "error": str(e)})
+
+    # --- Webhook / Cron Handlers ---
+
+    def _handle_list_webhooks(self):
+        """GET /api/webhooks — list all registered webhooks."""
+        try:
+            sys.path.insert(0, str(ENGINE_DIR))
+            sys.path.insert(0, str(ENGINE_DIR.parent))
+            from engine.webhooks import list_webhooks
+            hooks = list_webhooks()
+            # Add the URL for each webhook
+            for h in hooks:
+                h["url"] = f"http://127.0.0.1:8765/api/webhook/{h['id']}"
+            self._send_json(200, {"webhooks": hooks})
+        except Exception as e:
+            logger.error(f"List webhooks error: {e}")
+            self._send_json(500, {"error": str(e)})
+
+    def _handle_list_crons(self):
+        """GET /api/crons — list all active cron tasks."""
+        try:
+            sys.path.insert(0, str(ENGINE_DIR))
+            sys.path.insert(0, str(ENGINE_DIR.parent))
+            from engine.cron import list_crons
+            crons = list_crons()
+            self._send_json(200, {"crons": crons})
+        except Exception as e:
+            logger.error(f"List crons error: {e}")
+            self._send_json(500, {"error": str(e)})
+
+    def _handle_incoming_webhook(self):
+        """POST /api/webhook/<hook_id> — receive an external webhook trigger.
+
+        Validates the webhook, substitutes payload into action template,
+        runs it through AI, and sends result to Telegram.
+        """
+        # Extract hook_id from path
+        hook_id = self.path.split("/api/webhook/", 1)[-1].strip("/")
+        if not hook_id:
+            self._send_json(400, {"error": "Missing webhook ID"})
+            return
+
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(content_length) if content_length else b""
+        payload_str = body.decode("utf-8", errors="replace")
+
+        # Get signature header (GitHub uses X-Hub-Signature-256)
+        signature = self.headers.get("X-Hub-Signature-256", "") or self.headers.get("X-Signature", "")
+
+        try:
+            sys.path.insert(0, str(ENGINE_DIR))
+            sys.path.insert(0, str(ENGINE_DIR.parent))
+            from engine.webhooks import handle_webhook
+
+            prompt = handle_webhook(hook_id, payload_str, signature)
+            if not prompt:
+                self._send_json(404, {"error": "Webhook not found, inactive, or signature invalid"})
+                return
+
+            # Run the prompt through AI and send to Telegram asynchronously
+            self._send_json(200, {"status": "accepted", "hook_id": hook_id})
+
+            # Fire-and-forget: run AI + send to Telegram in background
+            import threading
+            threading.Thread(
+                target=self._process_webhook_async,
+                args=(hook_id, prompt),
+                daemon=True,
+            ).start()
+
+        except Exception as e:
+            logger.error(f"Webhook handler error: {e}")
+            self._send_json(500, {"error": str(e)})
+
+    def _process_webhook_async(self, hook_id: str, prompt: str):
+        """Process a webhook prompt through AI and send result to Telegram."""
+        import asyncio
+
+        async def _run():
+            try:
+                from engine.config import load_config as _lc, get_api_key, get_cli_timeout
+                config = _lc()
+                chat_id = config.get("telegram_user_id", "")
+                if not chat_id:
+                    logger.warning("No chat_id — cannot deliver webhook result")
+                    return
+
+                # Import AI and router
+                sys.path.insert(0, str(ENGINE_DIR))
+                from router import classify_message, pick_model
+                from ai import chat
+
+                task_type = classify_message(prompt)
+                provider, model = pick_model(task_type, config)
+                api_key = get_api_key(config)
+
+                system_prompt = (
+                    "You are Kiyomi, a personal assistant processing a webhook event. "
+                    "Summarize the event concisely and tell the user what happened. "
+                    "Keep your response under 1000 characters."
+                )
+
+                result = await chat(
+                    message=prompt,
+                    provider=provider,
+                    model=model,
+                    api_key=api_key if not provider.endswith("-cli") else "",
+                    system_prompt=system_prompt,
+                    history=[],
+                    cli_path=config.get("cli_path", ""),
+                    cli_timeout=get_cli_timeout(config),
+                )
+
+                # Send to Telegram
+                from telegram import Bot
+                token = config.get("telegram_token", "")
+                if token:
+                    bot = Bot(token=token)
+                    msg = f"🔔 *Webhook Triggered*\n\n{result}"
+                    try:
+                        await bot.send_message(chat_id=chat_id, text=msg[:4000], parse_mode="Markdown")
+                    except Exception:
+                        await bot.send_message(chat_id=chat_id, text=msg[:4000])
+
+                # macOS notification
+                try:
+                    from engine.notify import send_notification
+                    send_notification("Kiyomi — Webhook", f"Webhook {hook_id} triggered")
+                except Exception:
+                    pass
+
+            except Exception as e:
+                logger.error(f"Webhook async processing failed: {e}")
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(_run())
+        finally:
+            loop.close()
+
+    # --- Original Handlers ---
+
     def _handle_config(self):
         """Save config from onboarding wizard."""
         content_length = int(self.headers.get('Content-Length', 0))
@@ -787,10 +1050,14 @@ def start_onboarding_server(port=8765):
             self.server_name = "127.0.0.1"
             self.server_port = self.server_address[1]
     
+    # Bind to 0.0.0.0 if agents.json exists (multi-agent mode), else localhost only
+    _agents_path = os.path.join(os.path.expanduser("~"), ".kiyomi", "agents.json")
+    _bind_host = '0.0.0.0' if os.path.exists(_agents_path) else '127.0.0.1'
+
     for attempt_port in [port, port + 1, port + 2]:
         try:
-            _dbg(f"Trying to bind port {attempt_port}...")
-            server = ReusableHTTPServer(('127.0.0.1', attempt_port), OnboardingHandler)
+            _dbg(f"Trying to bind port {attempt_port} on {_bind_host}...")
+            server = ReusableHTTPServer((_bind_host, attempt_port), OnboardingHandler)
             _dbg(f"Server created on port {attempt_port}, starting thread...")
             def _serve(s):
                 _dbg("serve_forever() starting")

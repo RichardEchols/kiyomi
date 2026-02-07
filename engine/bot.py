@@ -36,6 +36,8 @@ from ai import chat
 from engine.memory import log_conversation, get_recent_context, extract_and_remember, load_all_memory, extract_facts_from_message, save_fact, export_memory, lookup_person
 from engine.multi_user import UserManager
 from engine.reminders import parse_reminder_from_message, add_reminder, list_active_reminders
+from engine.cron import add_cron, list_crons, remove_cron
+from engine.webhooks import create_webhook, list_webhooks, delete_webhook
 from updater import is_update_request, check_for_updates, perform_update, restart_bot
 from skills_integration import (
     run_post_message_hook, get_skills_prompt_context,
@@ -48,6 +50,19 @@ from get_to_know import (
 )
 from image_gen import is_image_request, generate_image
 from computer_control import is_computer_action, execute_computer_action
+
+# Gateway (agent-to-agent coordination)
+try:
+    from engine.gateway import (
+        init_gateway, get_registry, get_communicator,
+        parse_user_delegation, parse_delegation
+    )
+    _gateway_registry, _gateway_comm = init_gateway()
+    HAS_GATEWAY = bool(_gateway_registry and _gateway_registry.self_agent)
+except Exception as _gw_err:
+    HAS_GATEWAY = False
+    _gateway_registry = None
+    _gateway_comm = None
 
 # Ensure config/logs dirs exist before configuring logging.
 ensure_dirs()
@@ -96,9 +111,14 @@ def build_system_prompt(config: dict, user_dir: Path = None) -> str:
     }
     personality_desc = personality_traits.get(personality, personality_traits["professional"])
 
+    # Custom identity prompt (for agents like Arianna, Brock)
+    identity_prompt = config.get("identity_prompt", "")
+
     prompt = f"""You are {bot_name} — {name}'s personal assistant. Not a chatbot. Not an app. You are their EMPLOYEE.
 
 PERSONALITY: {personality_desc}
+
+{identity_prompt}
 
 Think of yourself as a real assistant who works for {name}. You know their life, their family, their work, their health, their preferences. You USE that knowledge constantly. You don't wait to be asked — you anticipate needs, follow up on things, and get work done.
 
@@ -127,6 +147,9 @@ TOOLS: You have real tools you can use silently:
 - create_file: Create .docx or .txt documents. Use when {name} asks you to write a resume, letter, report, or any document they can download. The file will be sent to them automatically.
 - send_email: Send an email via Gmail. Use when {name} asks you to email someone.
 - analyze_image: Analyze an image file. Use when {name} sends a photo or asks about an image.
+- schedule_task: Schedule a recurring automated task. "Every Monday check my portfolio" or "Every morning brief me on crypto news." These run automatically — Kiyomi does the work and sends the result. Use when {name} says "every [time] do [thing]" or "schedule [task]".
+- list_schedules: Show all active scheduled tasks (cron jobs) and webhooks. Use when {name} asks what's scheduled or what automations are running.
+- create_webhook: Create a webhook URL that external services can POST to. Kiyomi will process the payload and respond. Use when {name} asks to create a webhook or connect an external service.
 
 CRITICAL RULES:
 1. DO NOT ASK FOR CONFIRMATION — when {name} asks you to do something, DO IT. Don't say "Would you like me to..." or "Shall I..." — just do the thing. Action > asking.
@@ -142,6 +165,12 @@ CRITICAL RULES:
 4. KEEP RESPONSES SHORT. This is Telegram on a phone. 2-4 sentences max for casual chat. Only go longer when they ask for detailed info.
 5. When you create a file, tell them briefly what you made (1 sentence). The file appears automatically right after your message.
 """
+    # Add team awareness if gateway is active
+    if HAS_GATEWAY and _gateway_registry:
+        team_prompt = _gateway_registry.get_team_prompt()
+        if team_prompt:
+            prompt += "\n" + team_prompt
+
     return prompt.strip()
 
 
@@ -176,6 +205,80 @@ def _should_respond_in_group(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     return True
 
     return False
+
+
+def _detect_cron_request(message: str):
+    """Detect if a message is requesting a scheduled/cron task.
+
+    Returns (task_prompt, schedule_str) or None.
+
+    Cron triggers: "every [time] [do] [task]" or "schedule [task] every [time]"
+    Must NOT match simple reminders like "remind me every morning to..."
+    """
+    import re
+    msg_lower = message.lower().strip()
+
+    # Skip if it's a reminder request (reminders handler will catch it)
+    reminder_triggers = ['remind me', "don't let me forget", 'dont let me forget', 'remember to', 'alert me']
+    if any(t in msg_lower for t in reminder_triggers):
+        return None
+
+    # Pattern 1: "Every [schedule], [task]" or "Every [schedule] [task]"
+    # e.g. "Every Monday at 9am, check my portfolio"
+    # e.g. "Every morning search for crypto news"
+    schedule_patterns = [
+        r"^(every\s+(?:morning|afternoon|evening|night|day|monday|tuesday|wednesday|thursday|friday|saturday|sunday)"
+        r"(?:\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?)[,\s]+(.+)",
+        r"^(every\s+\d+\s*(?:hours?|minutes?))[,\s]+(.+)",
+        r"^(daily(?:\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?)[,\s]+(.+)",
+    ]
+
+    for pattern in schedule_patterns:
+        match = re.match(pattern, msg_lower, re.IGNORECASE)
+        if match:
+            schedule_str = match.group(1).strip()
+            task_part = message[match.start(2):match.end(2)].strip()
+            # Clean up task: remove leading "do", "run", "check"... keep it natural
+            task_clean = task_part.strip(' ,.')
+            if task_clean:
+                return (task_clean, schedule_str)
+
+    # Pattern 2: "Schedule a task every [schedule] to [task]"
+    schedule_match = re.match(
+        r"schedule\s+(?:a\s+)?(?:task\s+)?(every\s+\S+(?:\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?)\s+(?:to\s+)?(.+)",
+        msg_lower, re.IGNORECASE,
+    )
+    if schedule_match:
+        schedule_str = schedule_match.group(1).strip()
+        task_part = message[schedule_match.start(2):schedule_match.end(2)].strip()
+        return (task_part.strip(' ,.'), schedule_str)
+
+    return None
+
+
+def _detect_webhook_request(message: str):
+    """Detect if a message is requesting webhook creation.
+
+    Returns (name, action_template) or None.
+    """
+    import re
+    msg_lower = message.lower().strip()
+
+    # "Create a webhook for [name/purpose]"
+    webhook_patterns = [
+        r"(?:create|set\s*up|make|add)\s+(?:a\s+)?webhook\s+(?:for|when|that)\s+(.+)",
+        r"(?:create|set\s*up|make|add)\s+(?:a\s+)?webhook\s+(?:called|named)\s+[\"']?([^\"']+)[\"']?\s+(?:that|to|for)\s+(.+)",
+    ]
+
+    match = re.match(webhook_patterns[0], msg_lower, re.IGNORECASE)
+    if match:
+        purpose = message[match.start(1):match.end(1)].strip(' ,.')
+        # Generate a name and action template from the purpose
+        name = purpose[:50]
+        action_template = f"A webhook event just happened ({purpose}). Here's the payload: {{payload}}. Summarize what happened."
+        return (name, action_template)
+
+    return None
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -278,7 +381,91 @@ async def _handle_message_inner(update: Update, context: ContextTypes.DEFAULT_TY
             )
         
         return  # Don't process the message further
-    
+
+    # --- Agent delegation check ---
+    # If user explicitly addresses a teammate (@arianna, tell brock, etc.)
+    if HAS_GATEWAY and _gateway_comm and _gateway_registry:
+        delegation = parse_user_delegation(user_msg, _gateway_registry)
+        if delegation:
+            agent_id, task_prompt = delegation
+            agent = _gateway_registry.get_agent(agent_id)
+            if agent:
+                await update.message.chat.send_action(ChatAction.TYPING)
+                await update.message.reply_text(
+                    f"Sending that to {agent.name} {agent.emoji}..."
+                )
+
+                try:
+                    result = await _gateway_comm.send_task(agent_id, task_prompt, timeout=300)
+                    if result.get("status") == "completed":
+                        response_text = f"**{agent.name} {agent.emoji}:**\n\n{result.get('result', 'Done.')}"
+                    else:
+                        error = result.get("error", "Unknown error")
+                        response_text = f"{agent.name} couldn't complete that: {error}"
+
+                    # Send response (split if too long)
+                    if len(response_text) > 4000:
+                        chunks = [response_text[i:i+4000] for i in range(0, len(response_text), 4000)]
+                        for chunk in chunks:
+                            await update.message.reply_text(chunk, parse_mode="Markdown")
+                    else:
+                        await update.message.reply_text(response_text, parse_mode="Markdown")
+
+                    log_conversation(user_msg, f"[Delegated to {agent.name}: {task_prompt[:100]}]", user_dir=user_memory_dir)
+                except Exception as e:
+                    logger.error(f"Delegation to {agent_id} failed: {e}")
+                    await update.message.reply_text(
+                        f"Couldn't reach {agent.name} right now. Error: {str(e)[:200]}"
+                    )
+                return
+
+    # Check for cron task (scheduled automation — different from reminders)
+    cron_result = _detect_cron_request(user_msg)
+    if cron_result:
+        task_prompt, schedule_str = cron_result
+        cron_entry = add_cron(task_prompt, schedule_str)
+        if cron_entry:
+            schedule_human = cron_entry.get("schedule_human", schedule_str)
+            next_run = cron_entry.get("next_run", "soon")
+            try:
+                from datetime import datetime as _dt
+                nr = _dt.fromisoformat(next_run)
+                next_str = nr.strftime("%b %d at %I:%M %p")
+            except (ValueError, TypeError):
+                next_str = next_run
+            await update.message.reply_text(
+                f"Scheduled! 🔄\n\n"
+                f"*Task:* {task_prompt[:200]}\n"
+                f"*Schedule:* {schedule_human}\n"
+                f"*Next run:* {next_str}\n\n"
+                f"I'll run this automatically and send you the results. "
+                f"Use /cron to manage your scheduled tasks.",
+                parse_mode="Markdown"
+            )
+            log_conversation(user_msg, f"[Cron scheduled: {task_prompt[:100]} — {schedule_human}]", user_dir=user_memory_dir)
+            return
+
+    # Check for webhook creation request
+    webhook_result = _detect_webhook_request(user_msg)
+    if webhook_result:
+        name, action_template = webhook_result
+        hook = create_webhook(name, action_template)
+        # Use actual IP from agent registry, fallback to localhost
+        _self_host = "127.0.0.1"
+        if HAS_GATEWAY and _gateway_registry and _gateway_registry.self_agent:
+            _self_host = _gateway_registry.self_agent.host
+        hook_url = f"http://{_self_host}:8765/api/webhook/{hook['id']}"
+        await update.message.reply_text(
+            f"Webhook created! 🔔\n\n"
+            f"*Name:* {name}\n"
+            f"*URL:* `{hook_url}`\n\n"
+            f"POST any JSON payload to that URL and I'll process it.\n"
+            f"Use /webhooks to manage your webhooks.",
+            parse_mode="Markdown"
+        )
+        log_conversation(user_msg, f"[Webhook created: {name}]", user_dir=user_memory_dir)
+        return
+
     # Check for reminder
     reminder_info = parse_reminder_from_message(user_msg)
     if reminder_info:
@@ -294,7 +481,7 @@ async def _handle_message_inner(update: Update, context: ContextTypes.DEFAULT_TY
         )
         log_conversation(user_msg, f"[Reminder set: {reminder_info['text']}]", user_dir=user_memory_dir)
         return
-    
+
     # Check for image generation request
     if is_image_request(user_msg):
         logger.info(f"Image generation request detected: {user_msg[:100]}...")
@@ -554,7 +741,43 @@ async def _handle_message_inner(update: Update, context: ContextTypes.DEFAULT_TY
     
     # Run skills post-message hook (detect & extract health, budget, tasks)
     run_post_message_hook(user_msg, response)
-    
+
+    # --- AI response delegation ---
+    # If the AI decided to delegate (e.g. "@arianna: Draft a launch email"),
+    # intercept the response and route it to the teammate instead of sending as text.
+    if HAS_GATEWAY and _gateway_comm and _gateway_registry:
+        delegation = parse_delegation(response, _gateway_registry)
+        if delegation:
+            agent_id, task_prompt = delegation
+            agent = _gateway_registry.get_agent(agent_id)
+            if agent:
+                await update.message.reply_text(
+                    f"Let me pass that to {agent.name} {agent.emoji}..."
+                )
+                try:
+                    result = await _gateway_comm.send_task(agent_id, task_prompt, timeout=300)
+                    if result.get("status") == "completed":
+                        response_text = f"**{agent.name} {agent.emoji}:**\n\n{result.get('result', 'Done.')}"
+                    else:
+                        error = result.get("error", "Unknown error")
+                        response_text = f"{agent.name} couldn't complete that: {error}"
+
+                    if len(response_text) > 4000:
+                        chunks = [response_text[i:i+4000] for i in range(0, len(response_text), 4000)]
+                        for chunk in chunks:
+                            await update.message.reply_text(chunk, parse_mode="Markdown")
+                    else:
+                        await update.message.reply_text(response_text, parse_mode="Markdown")
+
+                    log_conversation(user_msg, f"[AI delegated to {agent.name}: {task_prompt[:100]}]", user_dir=user_memory_dir)
+                except Exception as e:
+                    logger.error(f"AI delegation to {agent_id} failed: {e}")
+                    await update.message.reply_text(
+                        f"I tried to pass this to {agent.name} but couldn't reach them. "
+                        f"Here's what I was going to ask:\n\n{task_prompt[:500]}"
+                    )
+                return  # Don't send the raw @agent response
+
     # Voice reply check — respond with audio if appropriate
     try:
         from voice_reply import should_use_voice, generate_voice_reply
@@ -871,12 +1094,21 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• \"Make me an expense tracker\"\n"
         "• \"Build a calculator for my business\"\n"
         "• Single HTML file, works offline, no dependencies!\n\n"
+        "🔄 **I Run Scheduled Tasks** — Automated AI tasks on a schedule:\n"
+        "• \"Every morning check bitcoin price\"\n"
+        "• \"Every Monday summarize my portfolio\"\n"
+        "• \"Every Friday write a weekly recap\"\n\n"
+        "🔔 **I Accept Webhooks** — External services can trigger me:\n"
+        "• GitHub pushes, Stripe payments, build alerts\n"
+        "• \"Create a webhook for when my builds finish\"\n\n"
         "**Commands:**\n"
         "/memory — See everything I remember about you\n"
         "/health — Your health summary\n"
         "/budget — Your spending summary\n"
         "/tasks — Your task list\n"
         "/reminders — Your active reminders\n"
+        "/cron — Your scheduled tasks\n"
+        "/webhooks — Your active webhooks\n"
         "/receipts — Recent scanned receipts\n"
         "/connect — Connect your bank account\n"
         "/profile — Your personal profile card 🪪\n"
@@ -1172,6 +1404,98 @@ async def cmd_receipts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Sorry, I had trouble loading receipt history. 😅")
 
 
+async def cmd_cron(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /cron — list active scheduled tasks."""
+    crons = list_crons()
+    if not crons:
+        await update.message.reply_text(
+            "No scheduled tasks running! 🔄\n\n"
+            "Try saying:\n"
+            "• \"Every morning check bitcoin price\"\n"
+            "• \"Every Monday at 9am summarize my portfolio\"\n"
+            "• \"Every Friday write a weekly recap\""
+        )
+        return
+
+    lines = ["🔄 **Scheduled Tasks**\n"]
+    for c in crons:
+        schedule = c.get("schedule_human", "?")
+        task = c.get("task", "?")
+        next_run = c.get("next_run", "?")
+        if next_run and next_run != "?":
+            try:
+                from datetime import datetime
+                nr = datetime.fromisoformat(next_run)
+                next_str = nr.strftime("%b %d, %I:%M %p")
+            except (ValueError, TypeError):
+                next_str = next_run
+        else:
+            next_str = "?"
+        lines.append(f"• *{schedule}*\n  {task[:100]}\n  Next: {next_str}\n  ID: `{c['id']}`\n")
+
+    lines.append("_To remove: /removecron <id>_")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_removecron(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /removecron <id> — remove a scheduled task."""
+    if not context.args:
+        await update.message.reply_text("Usage: /removecron <task_id>\n\nUse /cron to see IDs.")
+        return
+
+    cron_id = context.args[0]
+    if remove_cron(cron_id):
+        await update.message.reply_text(f"Scheduled task removed. ✅")
+    else:
+        await update.message.reply_text(f"Task not found: `{cron_id}`", parse_mode="Markdown")
+
+
+async def cmd_webhooks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /webhooks — list active webhooks."""
+    hooks = list_webhooks()
+    if not hooks:
+        await update.message.reply_text(
+            "No webhooks configured! 🔔\n\n"
+            "Try saying:\n"
+            "• \"Create a webhook for GitHub pushes\"\n"
+            "• \"Set up a webhook for Stripe payments\"\n"
+            "• \"Make a webhook for build notifications\""
+        )
+        return
+
+    lines = ["🔔 **Webhooks**\n"]
+    for h in hooks:
+        name = h.get("name", "Unnamed")
+        hook_id = h.get("id", "?")
+        count = h.get("trigger_count", 0)
+        _wh_host = "127.0.0.1"
+        if HAS_GATEWAY and _gateway_registry and _gateway_registry.self_agent:
+            _wh_host = _gateway_registry.self_agent.host
+        url = f"http://{_wh_host}:8765/api/webhook/{hook_id}"
+        lines.append(
+            f"• **{name}**\n"
+            f"  URL: `{url}`\n"
+            f"  Triggered: {count} time{'s' if count != 1 else ''}\n"
+            f"  ID: `{hook_id}`\n"
+        )
+
+    lines.append("_To remove: /removewebhook <id>_")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_removewebhook(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /removewebhook <id> — remove a webhook."""
+    if not context.args:
+        await update.message.reply_text("Usage: /removewebhook <hook_id>\n\nUse /webhooks to see IDs.")
+        return
+
+    hook_id = context.args[0]
+    if delete_webhook(hook_id):
+        await update.message.reply_text(f"Webhook removed. ✅")
+    else:
+        await update.message.reply_text(f"Webhook not found: `{hook_id}`", parse_mode="Markdown")
+
+
 async def cmd_connect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /connect — connect a bank account via Plaid."""
     try:
@@ -1334,7 +1658,76 @@ async def post_init(app: Application):
     except Exception as e:
         logger.warning(f"Scheduler failed to start: {e}")
     
+    # Initialize gateway execute function (so other agents can send us tasks)
+    if HAS_GATEWAY and _gateway_comm:
+        async def _gateway_execute(prompt: str) -> str:
+            """Execute a task delegated by another agent via Claude Code CLI."""
+            config = load_config()
+            provider, model = pick_model("task", config)
+            api_key = get_api_key(config)
+            system_prompt = build_system_prompt(config)
+            result = await chat(
+                message=prompt,
+                provider=provider,
+                model=model,
+                api_key=api_key,
+                system_prompt=system_prompt,
+                history=[],
+                cli_path=config.get("cli_path", ""),
+                cli_timeout=get_cli_timeout(config),
+            )
+            return result
+
+        _gateway_comm.set_execute_fn(_gateway_execute)
+
+        # Set up Telegram notification for completed tasks
+        config = load_config()
+        chat_id = config.get("telegram_user_id", "")
+        if chat_id:
+            async def _gateway_notify(message: str):
+                try:
+                    await app.bot.send_message(chat_id, message, parse_mode="Markdown")
+                except Exception as e:
+                    logger.warning(f"Gateway notify failed: {e}")
+            _gateway_comm.set_notify_fn(_gateway_notify)
+
+        agent_name = _gateway_registry.self_agent.name if _gateway_registry.self_agent else "Kiyomi"
+        team_count = len(_gateway_registry.team)
+        logger.info(f"🌐 Gateway active: {agent_name} with {team_count} teammates")
+
     logger.info("🌸 Background tasks started")
+
+
+async def cmd_team(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /team command — show agent team status."""
+    await update.message.chat.send_action(ChatAction.TYPING)
+
+    if not HAS_GATEWAY or not _gateway_registry or not _gateway_registry.self_agent:
+        await update.message.reply_text(
+            "No agent team configured.\n\n"
+            "To set up a team, create `~/.kiyomi/agents.json` with your agent definitions."
+        )
+        return
+
+    # Build status message
+    self_agent = _gateway_registry.self_agent
+    lines = [f"**{self_agent.name}** {self_agent.emoji} (me) — {self_agent.role}\n"]
+
+    if _gateway_comm:
+        statuses = await _gateway_comm.check_all_agents()
+        for status in statuses:
+            agent = _gateway_registry.get_agent(status["agent_id"])
+            if agent:
+                icon = "🟢" if status["status"] == "online" else "🔴"
+                lines.append(f"{icon} **{agent.name}** {agent.emoji} — {agent.role}")
+            else:
+                lines.append(f"❓ {status['agent_id']} — {status['status']}")
+    else:
+        for agent in _gateway_registry.team.values():
+            lines.append(f"⚪ **{agent.name}** {agent.emoji} — {agent.role}")
+
+    lines.append(f"\n_To delegate: @name your request_")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 async def cmd_apps(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1419,7 +1812,12 @@ def _build_app():
     app.add_handler(CommandHandler("receipts", cmd_receipts))
     app.add_handler(CommandHandler("profile", cmd_profile))
     app.add_handler(CommandHandler("apps", cmd_apps))
-    
+    app.add_handler(CommandHandler("team", cmd_team))
+    app.add_handler(CommandHandler("cron", cmd_cron))
+    app.add_handler(CommandHandler("removecron", cmd_removecron))
+    app.add_handler(CommandHandler("webhooks", cmd_webhooks))
+    app.add_handler(CommandHandler("removewebhook", cmd_removewebhook))
+
     # Messages
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))

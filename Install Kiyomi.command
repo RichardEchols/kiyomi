@@ -61,36 +61,6 @@ pip3 install --quiet \
 
 echo "✅ Dependencies installed!"
 
-# License validation
-echo "🔑 License validation..."
-cd "$APP_DIR"
-
-# Create a simple license checker script
-cat > "$APP_DIR/check_license.py" << 'LICENSE_CHECK'
-import sys
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'engine'))
-from license import check_license
-
-if __name__ == "__main__":
-    if check_license():
-        print("License validated successfully!")
-        sys.exit(0)
-    else:
-        sys.exit(1)
-LICENSE_CHECK
-
-# Run license check
-if ! python3 check_license.py; then
-    echo "❌ License validation failed. Installation cancelled."
-    echo "   Press Enter to exit..."
-    read
-    exit 1
-fi
-
-# Clean up temporary script
-rm -f "$APP_DIR/check_license.py"
-
 # Create launcher script
 cat > "$INSTALL_DIR/start.command" << 'LAUNCHER'
 #!/bin/bash

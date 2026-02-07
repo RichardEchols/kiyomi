@@ -1,6 +1,6 @@
 """
 Kiyomi Lite — Proactive Scheduler
-Makes Kiyomi reach out. Fires reminders, sends morning briefs, runs skill nudges.
+Makes Kiyomi reach out. Fires reminders, morning briefs, skill nudges, and cron tasks.
 Runs every 60 seconds in the background.
 """
 import asyncio
@@ -55,19 +55,22 @@ class Scheduler:
                 # 1. Fire due reminders
                 await self._fire_reminders(now)
 
-                # 2. Morning brief (once per day)
+                # 2. Fire due cron tasks (automated AI tasks)
+                await self._fire_cron_tasks(now, config)
+
+                # 3. Morning brief (once per day)
                 await self._morning_brief(now, config)
 
-                # 3. Skill nudges (every 2 hours)
+                # 4. Skill nudges (every 2 hours)
                 await self._skill_nudges(now)
 
-                # 4. Smart follow-ups (once per hour)
+                # 5. Smart follow-ups (once per hour)
                 await self._check_follow_ups(config)
 
-                # 5. Weekly digest (Sundays at 10 AM)
+                # 6. Weekly digest (Sundays at 10 AM)
                 await self._send_weekly_digest(config)
 
-                # 6. Smart nudges — budget, bills, habits, health, etc. (every 3 hours)
+                # 7. Smart nudges — budget, bills, habits, health, etc. (every 3 hours)
                 await self._smart_nudges(now, config)
 
             except Exception as e:
@@ -92,6 +95,104 @@ class Scheduler:
                 logger.info(f"Fired reminder: {text[:50]}")
             except Exception as e:
                 logger.error(f"Failed to send reminder: {e}")
+
+    # ── Cron Tasks ────────────────────────────────────────────
+
+    async def _fire_cron_tasks(self, now: datetime, config: dict):
+        """Check cron.json, fire any tasks that are due.
+
+        Unlike reminders (which send a text), cron tasks run the AI
+        with the task prompt and send the result to Telegram.
+        """
+        try:
+            try:
+                from cron import get_due_crons, mark_cron_run
+            except ImportError:
+                from engine.cron import get_due_crons, mark_cron_run
+        except ImportError:
+            return  # Module not available yet
+
+        due = get_due_crons(now)
+        if not due:
+            return
+
+        # Import AI chat and notification
+        try:
+            try:
+                from ai import chat
+            except ImportError:
+                from engine.ai import chat
+        except ImportError:
+            logger.error("Cannot import chat() for cron tasks")
+            return
+
+        try:
+            from engine.notify import send_notification
+        except ImportError:
+            send_notification = None
+
+        from engine.config import get_api_key, get_cli_timeout
+        from router import classify_message, pick_model
+
+        for cron in due:
+            task_prompt = cron.get("task", "")
+            cron_id = cron.get("id", "?")
+            schedule = cron.get("schedule_human", "")
+
+            logger.info(f"Firing cron task: {task_prompt[:60]}... ({schedule})")
+
+            try:
+                # Run the task through AI
+                task_type = classify_message(task_prompt)
+                provider, model = pick_model(task_type, config)
+                api_key = get_api_key(config)
+
+                system_prompt = (
+                    "You are Kiyomi, a personal assistant running a scheduled task. "
+                    "Complete the following task concisely and report the results. "
+                    "Keep your response under 1000 characters."
+                )
+
+                result = await chat(
+                    message=task_prompt,
+                    provider=provider,
+                    model=model,
+                    api_key=api_key if not provider.endswith("-cli") else "",
+                    system_prompt=system_prompt,
+                    history=[],
+                    cli_path=config.get("cli_path", ""),
+                    cli_timeout=get_cli_timeout(config),
+                )
+
+                # Send result to Telegram
+                msg = f"🔄 *Scheduled Task*\n_{schedule}_\n\n{result}"
+                try:
+                    await self.bot.send_message(
+                        chat_id=self.chat_id, text=msg[:4000], parse_mode="Markdown"
+                    )
+                except Exception:
+                    # Fallback without markdown if parsing fails
+                    await self.bot.send_message(
+                        chat_id=self.chat_id, text=msg[:4000]
+                    )
+
+                # macOS notification
+                if send_notification:
+                    send_notification("Kiyomi — Task Complete", task_prompt[:100])
+
+                # Mark as run and recalculate next_run
+                mark_cron_run(cron_id, now)
+                logger.info(f"Cron task completed: {cron_id}")
+
+            except Exception as e:
+                logger.error(f"Cron task {cron_id} failed: {e}")
+                try:
+                    await self.bot.send_message(
+                        chat_id=self.chat_id,
+                        text=f"⚠️ Scheduled task failed: {task_prompt[:100]}\nError: {str(e)[:200]}"
+                    )
+                except Exception:
+                    pass
 
     # ── Morning Brief ───────────────────────────────────────
 
