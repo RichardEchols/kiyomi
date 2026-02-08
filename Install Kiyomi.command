@@ -1,6 +1,6 @@
 #!/bin/bash
-# Kiyomi v4.0 Installer — Double-click to install
-# Works on any Mac with Python 3.10+
+# Kiyomi v4.0 Installer
+# Runs inside KiyomiInstaller.app — called by the app binary
 
 set -e
 
@@ -9,7 +9,7 @@ echo "🌸 Kiyomi v4.0 Installer"
 echo "========================="
 echo ""
 
-# Find the script's directory (where the user downloaded Kiyomi)
+# Find the script's directory (inside .app bundle Resources/)
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 INSTALL_DIR="$HOME/.kiyomi"
 APP_DIR="$INSTALL_DIR/app"
@@ -28,6 +28,7 @@ rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR"
 cp -R "$SCRIPT_DIR/engine" "$APP_DIR/"
 cp -R "$SCRIPT_DIR/onboarding" "$APP_DIR/"
+cp -R "$SCRIPT_DIR/dashboard" "$APP_DIR/" 2>/dev/null || true
 cp -R "$SCRIPT_DIR/sdk-bridge" "$APP_DIR/" 2>/dev/null || true
 cp "$SCRIPT_DIR/app.py" "$APP_DIR/"
 cp "$SCRIPT_DIR/import_brain.py" "$APP_DIR/" 2>/dev/null || true
@@ -47,18 +48,8 @@ fi
 
 # Install Python dependencies
 echo "📚 Installing dependencies (this may take a minute)..."
-pip3 install --quiet --break-system-packages \
-    python-telegram-bot \
-    google-genai \
-    anthropic \
-    pytz \
-    rumps 2>/dev/null || \
-pip3 install --quiet \
-    python-telegram-bot \
-    google-genai \
-    anthropic \
-    pytz \
-    rumps
+pip3 install --quiet --break-system-packages -r "$APP_DIR/requirements.txt" 2>/dev/null || \
+pip3 install --quiet -r "$APP_DIR/requirements.txt"
 
 echo "✅ Python dependencies installed!"
 
