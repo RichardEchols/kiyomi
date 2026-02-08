@@ -11,6 +11,7 @@ Combines:
 Sends a beautiful formatted report every Sunday evening.
 This is the "personal CFO + life coach" feature.
 """
+from __future__ import annotations
 
 import json
 import logging

@@ -338,7 +338,7 @@ async def build_app(prompt: str, config: dict) -> dict:
         full_prompt = _generate_app_prompt(prompt)
         
         # Step 2: Route through user's AI provider
-        task_type = "complex"  # App generation is complex work
+        task_type = "task"  # App generation needs Opus
         provider, model = pick_model(task_type, config)
         api_key = config.get(f"{provider}_key", "") or get_api_key(config)
         

@@ -5,6 +5,7 @@ Proactively reminds about upcoming birthdays and anniversaries.
 
 This is what makes a personal assistant PERSONAL.
 """
+from __future__ import annotations
 
 import json
 import logging

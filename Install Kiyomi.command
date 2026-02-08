@@ -1,12 +1,12 @@
 #!/bin/bash
-# Kiyomi Lite Installer — Double-click to install
+# Kiyomi v4.0 Installer — Double-click to install
 # Works on any Mac with Python 3.10+
 
 set -e
 
 clear
-echo "🌸 Kiyomi Installer"
-echo "==================="
+echo "🌸 Kiyomi v4.0 Installer"
+echo "========================="
 echo ""
 
 # Find the script's directory (where the user downloaded Kiyomi)
@@ -28,6 +28,7 @@ rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR"
 cp -R "$SCRIPT_DIR/engine" "$APP_DIR/"
 cp -R "$SCRIPT_DIR/onboarding" "$APP_DIR/"
+cp -R "$SCRIPT_DIR/sdk-bridge" "$APP_DIR/" 2>/dev/null || true
 cp "$SCRIPT_DIR/app.py" "$APP_DIR/"
 cp "$SCRIPT_DIR/import_brain.py" "$APP_DIR/" 2>/dev/null || true
 cp "$SCRIPT_DIR/requirements.txt" "$APP_DIR/"
@@ -44,7 +45,7 @@ else
     exit 1
 fi
 
-# Install dependencies
+# Install Python dependencies
 echo "📚 Installing dependencies (this may take a minute)..."
 pip3 install --quiet --break-system-packages \
     python-telegram-bot \
@@ -59,19 +60,57 @@ pip3 install --quiet \
     pytz \
     rumps
 
-echo "✅ Dependencies installed!"
+echo "✅ Python dependencies installed!"
 
-# Create launcher script
+# Set up SDK Bridge (for Claude Pro/Max users — enables multi-turn AI sessions)
+if [ -d "$APP_DIR/sdk-bridge" ]; then
+    if command -v node &> /dev/null; then
+        NODE_V=$(node --version)
+        echo "🔗 Setting up SDK Bridge (Node.js $NODE_V found)..."
+        cd "$APP_DIR/sdk-bridge"
+        npm install --silent 2>/dev/null || npm install 2>/dev/null
+        echo "   SDK Bridge ready (enables multi-turn Claude sessions)"
+    else
+        echo "ℹ️  Node.js not found — SDK Bridge skipped (optional)"
+        echo "   Install Node.js from nodejs.org for enhanced Claude experience"
+    fi
+fi
+
+# Create launcher script that starts both bot and SDK bridge
 cat > "$INSTALL_DIR/start.command" << 'LAUNCHER'
 #!/bin/bash
-cd "$HOME/.kiyomi/app"
+APP_DIR="$HOME/.kiyomi/app"
+
+# Start SDK Bridge in background if available
+if [ -d "$APP_DIR/sdk-bridge" ] && command -v node &> /dev/null; then
+    # Kill any existing bridge
+    lsof -ti :3456 2>/dev/null | xargs kill -9 2>/dev/null || true
+    cd "$APP_DIR/sdk-bridge"
+    node server.js > "$HOME/.kiyomi/logs/sdk-bridge.log" 2>&1 &
+    echo "🔗 SDK Bridge started on port 3456"
+    sleep 1
+fi
+
+cd "$APP_DIR"
 python3 app.py
 LAUNCHER
 chmod +x "$INSTALL_DIR/start.command"
 
+echo ""
+echo "✅ Installation complete!"
+echo ""
+
+# Start SDK Bridge in background
+if [ -d "$APP_DIR/sdk-bridge" ] && command -v node &> /dev/null; then
+    lsof -ti :3456 2>/dev/null | xargs kill -9 2>/dev/null || true
+    cd "$APP_DIR/sdk-bridge"
+    node server.js > "$INSTALL_DIR/logs/sdk-bridge.log" 2>&1 &
+    echo "🔗 SDK Bridge started"
+    sleep 1
+fi
+
 # Check if config exists (returning user)
 if [ -f "$INSTALL_DIR/config.json" ]; then
-    echo ""
     echo "✅ Existing config found! Starting Kiyomi..."
     echo ""
     cd "$APP_DIR"
@@ -83,15 +122,11 @@ if [ -f "$INSTALL_DIR/config.json" ]; then
     echo "   To stop: Close this terminal window"
     echo "   To start again: Double-click ~/.kiyomi/start.command"
 else
-    echo ""
-    echo "🌸 Installation complete!"
-    echo ""
     echo "   Opening setup wizard in your browser..."
     echo ""
     cd "$APP_DIR"
     python3 app.py &
     sleep 4
-    # Open onboarding directly from installer (more reliable than backgrounded Python)
     open "http://127.0.0.1:8765/index.html" 2>/dev/null || true
     echo "   If the browser didn't open, go to: http://127.0.0.1:8765"
     echo ""

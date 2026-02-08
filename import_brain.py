@@ -4,6 +4,8 @@ Parse exported AI chat histories and extract what matters.
 Supports: ChatGPT (conversations.json), Gemini (Takeout), Claude exports.
 User drags a file → we silently learn who they are.
 """
+from __future__ import annotations
+
 import json
 import logging
 import re

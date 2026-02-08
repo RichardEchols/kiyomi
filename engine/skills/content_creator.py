@@ -2,6 +2,8 @@
 Kiyomi Lite — Content Creator Skill
 Tracks: content ideas, posting schedule, analytics/performance, drafts
 """
+from __future__ import annotations
+
 import re
 from datetime import datetime, timedelta
 

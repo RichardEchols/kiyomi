@@ -7,6 +7,8 @@ Includes scheduler-facing helpers:
     - get_due_reminders()    — reminders due *right now* (60-s window)
     - mark_reminder_sent()   — update last_sent, deactivate if non-recurring
 """
+from __future__ import annotations
+
 import json
 import logging
 import re

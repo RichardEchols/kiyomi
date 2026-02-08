@@ -7,6 +7,8 @@ Auth model: Users authenticate with their existing AI subscriptions
 (Claude Pro, ChatGPT Plus, Google One AI Premium) via browser OAuth.
 No API keys needed.
 """
+from __future__ import annotations
+
 import asyncio
 import json
 import logging

@@ -8,6 +8,7 @@ Share with your doctor, financial advisor, or spouse.
 
 This is the "wow" moment in demos.
 """
+from __future__ import annotations
 
 import json
 import logging

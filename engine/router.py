@@ -1,7 +1,7 @@
 """
-Kiyomi Lite — Model Router
-Routes messages to the right AI provider (Gemini, Claude, GPT).
-User never sees this — it just works.
+Kiyomi — Model Router (Super Kiyomi Edition)
+Routes messages to the right AI provider and model.
+Supports dual-model routing: Sonnet for chat, Opus for tasks.
 """
 import logging
 from typing import Optional
@@ -11,11 +11,18 @@ logger = logging.getLogger(__name__)
 
 def classify_message(text: str) -> str:
     """Classify what kind of task this is.
-    
-    Returns: 'simple', 'writing', 'building'
+
+    Returns: 'chat' (fast, Sonnet) or 'task' (serious, Opus)
     """
     text_lower = text.lower()
-    
+
+    # Explicit model triggers (user override)
+    if any(t in text_lower for t in ['/opus', 'use opus', 'deep mode', 'full power']):
+        return 'task'
+    if any(t in text_lower for t in ['/sonnet', 'use sonnet', 'quick mode']):
+        return 'chat'
+
+    # Building / coding -> always task (Opus)
     building_words = [
         'build me', 'build a ', 'create app', 'create an app',
         'create a script', 'create a program', 'create a bot',
@@ -30,31 +37,37 @@ def classify_message(text: str) -> str:
         'code a ', 'code an ', 'code me',
         'automate this', 'automation script',
     ]
-    writing_words = [
+
+    # Serious analysis / work -> task (Opus)
+    task_words = [
         'write me', 'write a ', 'draft', 'compose', 'essay',
-        'business plan', 'marketing', 'strategy', 'proposal',
-        'analyze', 'analysis', 'explain in detail', 'research',
-        'generate report', 'summarize', 'summary', 'outline',
+        'business plan', 'marketing plan', 'strategy',
+        'proposal', 'analyze', 'analysis', 'explain in detail',
+        'research', 'generate report', 'outline',
         'resume', 'cover letter', 'help me write',
-        'create a plan', 'create a summary', 'create a report',
-        'create a list', 'create a document', 'create a draft',
+        'create a plan', 'create a report',
+        'create a document', 'create a draft',
+        'trade', 'trading', 'portfolio', 'investment',
+        'buy ', 'sell ', 'position', 'market analysis',
+        'compare', 'evaluate', 'break down', 'deep dive',
+        'summarize', 'explain this', 'explain how', 'explain why',
+        'debug', 'fix this', 'troubleshoot', 'diagnose',
+        'refactor', 'optimize', 'review code', 'audit',
+        'send email', 'compose email', 'write email',
+        'scan', 'monitor', 'check my', 'pull up',
     ]
-    simple_words = [
-        'good morning', 'hello', 'hi', 'hey', 'what time',
-        'remind me', 'schedule', 'weather', 'remember',
-        'how are you', 'thank', 'good night', 'good evening',
-        'what can you do', 'tell me about',
-    ]
-    
+
     if any(kw in text_lower for kw in building_words):
-        return 'building'
-    if any(kw in text_lower for kw in writing_words):
-        return 'writing'
-    if any(kw in text_lower for kw in simple_words):
-        return 'simple'
+        return 'task'
+    if any(kw in text_lower for kw in task_words):
+        return 'task'
+
+    # Short messages -> chat (greetings, acks, quick questions)
     if len(text.split()) < 8:
-        return 'simple'
-    return 'writing'
+        return 'chat'
+
+    # Default: chat (Sonnet handles most things fine, safe default)
+    return 'chat'
 
 
 def pick_model(task_type: str, config: dict) -> tuple[str, str]:
@@ -62,33 +75,32 @@ def pick_model(task_type: str, config: dict) -> tuple[str, str]:
 
     Returns: (provider, model_name)
 
-    Always respects the user's configured provider first.
-    Only falls back to other providers if the chosen one isn't available.
+    For claude-cli: task_type 'task' -> Opus, 'chat' -> Sonnet.
+    Trusts the user's configured provider — CLI availability is checked downstream.
     """
     provider = config.get("provider", "gemini")
 
-    # Check for CLI providers
-    from engine.config import detect_available_clis, get_model
-    available_clis = detect_available_clis()
-
-    # If user chose a CLI provider and it's available, use it
-    if provider in available_clis:
+    # CLI provider — trust the config, CLIRouter handles availability + fallback
+    if provider.endswith("-cli"):
+        if provider == "claude-cli":
+            if task_type == "task":
+                model = config.get("task_model") or "claude-opus-4-6"
+            else:
+                model = config.get("chat_model") or "claude-sonnet-4-5-20250929"
+            return (provider, model)
         cli_name = provider.replace("-cli", "")
         return (provider, cli_name)
 
-    # If user chose an API provider with a key, use it
+    # API provider — use configured model or defaults
+    from engine.config import get_model
     api_key_map = {"gemini": "gemini_key", "anthropic": "anthropic_key", "openai": "openai_key"}
     if provider in api_key_map and config.get(api_key_map[provider]):
         return (provider, get_model(config))
 
-    # User's chosen provider not available — fall back intelligently
-    # CLI fallback order depends on task type
-    if task_type == 'building':
-        cli_order = ["claude-cli", "gemini-cli", "codex-cli"]
-    else:
-        cli_order = ["claude-cli", "gemini-cli", "codex-cli"]
-
-    for cli in cli_order:
+    # Fallback: try to find any available CLI
+    from engine.config import detect_available_clis
+    available_clis = detect_available_clis()
+    for cli in ["claude-cli", "gemini-cli", "codex-cli"]:
         if cli in available_clis:
             cli_name = cli.replace("-cli", "")
             return (cli, cli_name)

@@ -81,7 +81,36 @@ logger = logging.getLogger("kiyomi")
 user_manager = UserManager()
 
 # Simple conversation history (in-memory, last 20 messages)
+# Persisted to disk so restarts don't lose context
+HISTORY_FILE = CONFIG_DIR / "conversation_history.json"
 conversation_history: list = []
+
+
+def _load_conversation_history():
+    """Load conversation history from disk on startup."""
+    global conversation_history
+    try:
+        import json
+        if HISTORY_FILE.exists():
+            with open(HISTORY_FILE) as f:
+                conversation_history[:] = json.load(f)
+            logger.info(f"Loaded {len(conversation_history)} messages from history")
+    except Exception as e:
+        logger.warning(f"Could not load conversation history: {e}")
+
+
+def _save_conversation_history():
+    """Save conversation history to disk after each message."""
+    try:
+        import json
+        with open(HISTORY_FILE, "w") as f:
+            json.dump(conversation_history[-40:], f)
+    except Exception as e:
+        logger.warning(f"Could not save conversation history: {e}")
+
+
+# Load history on module import
+_load_conversation_history()
 
 
 def get_bot_name(config: dict) -> str:
@@ -134,9 +163,6 @@ How you behave:
 
 {skills_context}
 {capabilities}
-
-FOR BUSINESS USERS: If {name} runs a business, you are their virtual employee. You remember clients, cases, deadlines, contacts. You draft documents, track tasks, remind about follow-ups. You are more reliable than a human assistant because you never forget. A lawyer tells you about a case once — you remember the client name, opposing counsel, deadlines, and key facts FOREVER.
-
 
 TOOLS: You have real tools you can use silently:
 - web_search: Search the internet. Use for ANY current info (weather, news, prices, scores, facts you're unsure about). ALWAYS search rather than guessing.
@@ -289,7 +315,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # In groups, only respond when @mentioned or replied to
     if not _should_respond_in_group(update, context):
         return
-    
+
+    # Keep-alive typing indicator (refreshes every 4 seconds so user sees "typing...")
+    chat_id = update.effective_chat.id
+    _typing_active = True
+
+    async def _keep_typing():
+        while _typing_active:
+            try:
+                await asyncio.sleep(4)
+                if _typing_active:
+                    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+            except Exception:
+                pass
+
+    typing_task = asyncio.create_task(_keep_typing())
+
     try:
         await _handle_message_inner(update, context)
     except Exception as e:
@@ -298,6 +339,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"Sorry, something went wrong! Error: {str(e)[:200]}")
         except Exception:
             pass
+    finally:
+        _typing_active = False
+        typing_task.cancel()
 
 
 async def _handle_message_inner(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -320,7 +364,7 @@ async def _handle_message_inner(update: Update, context: ContextTypes.DEFAULT_TY
     
     # Show typing indicator
     await update.message.chat.send_action(ChatAction.TYPING)
-    
+
     # --- Natural memory extraction (no onboarding gate) ---
     # Extract personal facts from every message silently
     facts = extract_facts_from_message(user_msg, user_dir=user_memory_dir)
@@ -671,6 +715,12 @@ async def _handle_message_inner(update: Update, context: ContextTypes.DEFAULT_TY
             )
             return
     
+    # Strip /opus and /sonnet triggers from the message before sending to AI
+    import re
+    ai_user_msg = user_msg
+    for trigger in ['/opus', '/sonnet']:
+        ai_user_msg = re.sub(r'(?<!\S)' + re.escape(trigger) + r'(?!\S)', '', ai_user_msg, flags=re.IGNORECASE).strip()
+
     # Classify and route
     task_type = classify_message(user_msg)
     provider, model = pick_model(task_type, config)
@@ -711,9 +761,9 @@ async def _handle_message_inner(update: Update, context: ContextTypes.DEFAULT_TY
     files_dir.mkdir(parents=True, exist_ok=True)
     files_before = set(files_dir.iterdir()) if files_dir.exists() else set()
 
-    ai_message = user_msg
+    ai_message = ai_user_msg
     if url_context:
-        ai_message = f"{user_msg}\n\n[Content from links]\n{url_context}"
+        ai_message = f"{ai_user_msg}\n\n[Content from links]\n{url_context}"
     
     # Chat with AI
     response = await chat(
@@ -731,10 +781,11 @@ async def _handle_message_inner(update: Update, context: ContextTypes.DEFAULT_TY
     conversation_history.append({"role": "user", "content": user_msg})
     conversation_history.append({"role": "assistant", "content": response})
     
-    # Keep history manageable
+    # Keep history manageable and persist to disk
     if len(conversation_history) > 40:
         conversation_history[:] = conversation_history[-20:]
-    
+    _save_conversation_history()
+
     # Save to memory (silently)
     log_conversation(user_msg, response, user_dir=user_memory_dir)
     extract_and_remember(user_msg, response, user_dir=user_memory_dir)

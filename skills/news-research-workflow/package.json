@@ -1,8 +1,0 @@
-{
-  "name": "news-research-workflow",
-  "version": "1.0.0",
-  "description": "Comprehensive methodology for researching news, verifying sources, and producing accurate analysis",
-  "keywords": ["research", "news", "fact-check", "grok", "twitter", "journalism", "analysis"],
-  "author": "Brock",
-  "license": "MIT"
-}

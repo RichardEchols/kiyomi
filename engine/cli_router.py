@@ -1,23 +1,30 @@
 """
 Kiyomi CLI Router — Agentic AI via CLI tools
 
-Routes AI requests through Claude, Codex, and Gemini CLIs in AGENTIC mode.
-Each CLI runs with full tool access (file I/O, web, code execution, search)
-and permission prompts bypassed for headless operation.
+Routes AI requests through Claude SDK bridge (preferred) or CLI tools.
+SDK bridge provides multi-turn, terminal-quality Claude Code sessions.
+Falls back to single-shot CLI if bridge is unavailable.
 
 Auth is validated before execution. Errors are caught and returned cleanly.
 """
 import asyncio
+import json
 import logging
 import os
 import shutil
 from pathlib import Path
 from typing import Optional
+from urllib.request import Request, urlopen
+from urllib.error import URLError
 
 logger = logging.getLogger(__name__)
 
 # Agentic tasks need more time than simple chat
 DEFAULT_TIMEOUT = 300  # 5 minutes
+
+# SDK Bridge settings
+SDK_BRIDGE_URL = "http://127.0.0.1:3456"
+SDK_BRIDGE_TIMEOUT = 600  # 10 minutes for complex SDK tasks
 
 # Workspace for created files
 WORKSPACE = Path.home() / ".kiyomi" / "workspace"
@@ -34,6 +41,7 @@ class CLIRouter:
         self,
         message: str,
         provider: str,
+        model: Optional[str] = None,
         cli_path: Optional[str] = None,
         system_prompt: Optional[str] = None,
         **kwargs,
@@ -48,6 +56,7 @@ class CLIRouter:
         Args:
             message: User message/prompt
             provider: CLI provider name (claude, codex, gemini, or with -cli suffix)
+            model: Optional model override (e.g. claude-sonnet-4-5-20250929)
             cli_path: Optional custom path to CLI binary
             system_prompt: Optional system prompt (passed natively for Claude,
                            prepended to message for others)
@@ -77,7 +86,7 @@ class CLIRouter:
 
         try:
             if provider == "claude":
-                return await self._execute_claude(message, cli_path, system_prompt)
+                return await self._execute_claude(message, cli_path, system_prompt, model=model)
             elif provider == "codex":
                 return await self._execute_codex(message, cli_path, system_prompt)
             elif provider == "gemini":
@@ -88,20 +97,28 @@ class CLIRouter:
             logger.error(f"CLI router error ({provider}): {e}")
             return f"CLI error: {str(e)[:100]}"
 
-    # ── Claude CLI (agentic) ──────────────────────────────────────────
+    # ── Claude (SDK bridge preferred, CLI fallback) ─────────────────
 
     async def _execute_claude(
         self, message: str, cli_path: Optional[str] = None,
-        system_prompt: Optional[str] = None,
+        system_prompt: Optional[str] = None, model: Optional[str] = None,
     ) -> str:
-        """Execute Claude Code CLI in agentic mode.
+        """Execute via Claude SDK bridge (multi-turn) or CLI fallback.
 
-        Flags:
-            -p                          Non-interactive (print mode)
-            --dangerously-skip-permissions  Bypass all tool permission prompts
-            --output-format text        Clean text output (no JSON wrapper)
-            --system-prompt             Separate system instructions
+        ONE code path for both Sonnet and Opus. Only maxTurns varies:
+        - Sonnet (chat): maxTurns=10 (enough for tool use, keeps it fast)
+        - Opus (task): maxTurns=50 (full agentic mode)
         """
+        max_turns = 10 if (model and "sonnet" in model.lower()) else 50
+        logger.info(f"Claude execution: model={model or 'default'}, maxTurns={max_turns}")
+
+        # Try SDK bridge first (both models go through the same path)
+        sdk_result = await self._try_sdk_bridge(message, system_prompt, model=model, max_turns=max_turns)
+        if sdk_result is not None:
+            return sdk_result
+
+        # Fallback to single-shot CLI
+        logger.info("SDK bridge unavailable, falling back to Claude CLI")
         cmd = cli_path or "claude"
         if not self.check_cli_available(cmd):
             return "Claude CLI not found."
@@ -110,11 +127,74 @@ class CLIRouter:
             cmd, "-p", message,
             "--output-format", "text",
             "--dangerously-skip-permissions",
+            "--max-turns", str(max_turns),
         ]
+        if model:
+            args.extend(["--model", model])
         if system_prompt:
             args.extend(["--system-prompt", system_prompt])
 
         return await self._run(args, "Claude")
+
+    async def _try_sdk_bridge(
+        self, message: str, system_prompt: Optional[str] = None,
+        model: Optional[str] = None, max_turns: int = 50,
+    ) -> Optional[str]:
+        """Try the SDK bridge. Returns response text or None if unavailable."""
+        try:
+            # Health check
+            health_req = Request(f"{SDK_BRIDGE_URL}/health")
+            with urlopen(health_req, timeout=3) as resp:
+                health = json.loads(resp.read())
+                if health.get("status") != "ok":
+                    return None
+        except Exception:
+            return None
+
+        logger.info(f"Using SDK bridge for Claude execution (model={model}, maxTurns={max_turns})")
+
+        payload_dict = {
+            "prompt": message,
+            "userId": "richard",
+            "cwd": str(Path.home()),
+            "maxTurns": max_turns,
+            "systemPrompt": system_prompt or "",
+        }
+        if model:
+            payload_dict["model"] = model
+        payload = json.dumps(payload_dict).encode()
+
+        req = Request(
+            f"{SDK_BRIDGE_URL}/query",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        try:
+            loop = asyncio.get_event_loop()
+            result = await asyncio.wait_for(
+                loop.run_in_executor(None, lambda: self._do_sdk_request(req)),
+                timeout=SDK_BRIDGE_TIMEOUT,
+            )
+
+            if result.get("success"):
+                text = result.get("result", "")
+                turns = result.get("turns", 0)
+                cost = result.get("cost", 0)
+                logger.info(f"SDK bridge: {turns} turns, ${cost:.4f}")
+                return text.strip() if text.strip() else "Done."
+            else:
+                logger.warning(f"SDK bridge error: {result.get('error')}")
+                return None
+        except Exception as e:
+            logger.warning(f"SDK bridge failed: {e}")
+            return None
+
+    @staticmethod
+    def _do_sdk_request(req: Request) -> dict:
+        with urlopen(req, timeout=SDK_BRIDGE_TIMEOUT) as resp:
+            return json.loads(resp.read())
 
     # ── Codex CLI (agentic) ───────────────────────────────────────────
 

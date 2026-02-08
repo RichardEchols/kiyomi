@@ -3,6 +3,8 @@ Kiyomi Lite — Task Manager Skill
 Detects to-dos, deadlines, and follow-ups in natural conversation.
 Extracts task text, due dates, and priority.
 """
+from __future__ import annotations
+
 import re
 import uuid
 from datetime import datetime, timedelta

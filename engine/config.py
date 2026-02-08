@@ -27,6 +27,9 @@ DEFAULT_CONFIG = {
     # CLI provider settings
     "cli_path": "",  # optional custom CLI path
     "cli_timeout": 60,  # timeout for CLI calls in seconds
+    # Dual-model routing (Claude CLI users)
+    "chat_model": "claude-sonnet-4-5-20250929",  # fast model for chat
+    "task_model": "claude-opus-4-6",  # powerful model for tasks
     # Computer control settings
     "computer_control_enabled": True,  # Enable/disable computer control
     "computer_control_confirm": True,  # Ask before taking action
@@ -93,20 +96,33 @@ def get_model(config: dict) -> str:
 def detect_available_clis() -> dict:
     """Detect which AI CLI tools are installed on the system."""
     import shutil
-    
+    import os
+
+    # Expand PATH for launchd compatibility (launchd has minimal PATH)
+    extra_paths = [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        str(Path.home() / ".local" / "bin"),
+        str(Path.home() / ".npm-global" / "bin"),
+    ]
+    expanded_path = os.environ.get("PATH", "")
+    for p in extra_paths:
+        if p not in expanded_path:
+            expanded_path = f"{p}:{expanded_path}"
+
     clis = {}
     cli_tools = {
         "claude-cli": "claude",
-        "codex-cli": "codex", 
+        "codex-cli": "codex",
         "gemini-cli": "gemini",
         "agent-tars": "agent-tars"
     }
-    
+
     for provider, cli_name in cli_tools.items():
-        cli_path = shutil.which(cli_name)
+        cli_path = shutil.which(cli_name, path=expanded_path)
         if cli_path:
             clis[provider] = cli_path
-    
+
     return clis
 
 

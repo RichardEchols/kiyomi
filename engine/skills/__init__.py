@@ -2,6 +2,8 @@
 Kiyomi Lite — Skill Registry
 Auto-discovers and loads all skills from this package.
 """
+from __future__ import annotations
+
 import importlib
 import logging
 import pkgutil

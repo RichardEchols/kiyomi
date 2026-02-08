@@ -2,6 +2,8 @@
 Kiyomi Lite — Health Tracker Skill
 Tracks: medications, vitals, symptoms, appointments, exercise
 """
+from __future__ import annotations
+
 import re
 from datetime import datetime, timedelta
 

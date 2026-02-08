@@ -3,6 +3,8 @@ Kiyomi Lite — URL Reader
 Fetches web pages and extracts readable text.
 When user sends a link, Kiyomi reads it.
 """
+from __future__ import annotations
+
 import re
 import logging
 import urllib.request

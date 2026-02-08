@@ -32,7 +32,7 @@ async def chat(
     
     # Check if this is a CLI provider
     if provider.endswith("-cli"):
-        return await _chat_cli(message, provider, system_prompt, history, cli_path, cli_timeout)
+        return await _chat_cli(message, provider, system_prompt, history, cli_path, cli_timeout, model=model)
     
     # API providers require API key
     if not api_key:
@@ -59,6 +59,7 @@ async def _chat_cli(
     history: list = None,
     cli_path: str = "",
     cli_timeout: int = 300,
+    model: str = "",
 ) -> str:
     """Chat via CLI tools in agentic mode with automatic fallback.
 
@@ -77,7 +78,7 @@ async def _chat_cli(
     # Build message with conversation history (system prompt handled by router)
     user_message = message
     if history:
-        recent_history = history[-6:]  # Last 6 messages (3 turns)
+        recent_history = history[-20:]  # Last 20 messages (10 turns)
         history_text = ""
         for msg in recent_history:
             role = msg.get("role", "user")
@@ -106,6 +107,7 @@ async def _chat_cli(
             response = await router.chat(
                 message=user_message,
                 provider=prov,
+                model=model if i == 0 else None,
                 cli_path=cli_path if i == 0 else None,
                 system_prompt=system_prompt,
             )

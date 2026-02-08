@@ -4,6 +4,8 @@ Kiyomi Lite — Menu Bar App
 Sits in your menu bar. Runs the engine. Opens Telegram.
 That's it. Simple.
 """
+from __future__ import annotations
+
 import os
 import sys
 import json
@@ -442,16 +444,6 @@ class OnboardingHandler(BaseHTTPRequestHandler):
             self._handle_agent_team()
             return
 
-        # Webhooks API: list registered webhooks
-        if path == "/api/webhooks":
-            self._handle_list_webhooks()
-            return
-
-        # Cron API: list active cron tasks
-        if path == "/api/crons":
-            self._handle_list_crons()
-            return
-
         # Dashboard API
         if path == "/api/dashboard/data":
             self._handle_dashboard_data()
@@ -603,8 +595,6 @@ class OnboardingHandler(BaseHTTPRequestHandler):
             self._handle_agent_task()
         elif self.path == "/api/agent/result":
             self._handle_agent_result()
-        elif self.path.startswith("/api/webhook/"):
-            self._handle_incoming_webhook()
         else:
             self._send_json(404, {"error": "Not found"})
     
@@ -697,145 +687,6 @@ class OnboardingHandler(BaseHTTPRequestHandler):
         except Exception as e:
             logger.error(f"Agent result handler error: {e}")
             self._send_json(500, {"status": "error", "error": str(e)})
-
-    # --- Webhook / Cron Handlers ---
-
-    def _handle_list_webhooks(self):
-        """GET /api/webhooks — list all registered webhooks."""
-        try:
-            sys.path.insert(0, str(ENGINE_DIR))
-            sys.path.insert(0, str(ENGINE_DIR.parent))
-            from engine.webhooks import list_webhooks
-            hooks = list_webhooks()
-            # Add the URL for each webhook
-            for h in hooks:
-                h["url"] = f"http://127.0.0.1:8765/api/webhook/{h['id']}"
-            self._send_json(200, {"webhooks": hooks})
-        except Exception as e:
-            logger.error(f"List webhooks error: {e}")
-            self._send_json(500, {"error": str(e)})
-
-    def _handle_list_crons(self):
-        """GET /api/crons — list all active cron tasks."""
-        try:
-            sys.path.insert(0, str(ENGINE_DIR))
-            sys.path.insert(0, str(ENGINE_DIR.parent))
-            from engine.cron import list_crons
-            crons = list_crons()
-            self._send_json(200, {"crons": crons})
-        except Exception as e:
-            logger.error(f"List crons error: {e}")
-            self._send_json(500, {"error": str(e)})
-
-    def _handle_incoming_webhook(self):
-        """POST /api/webhook/<hook_id> — receive an external webhook trigger.
-
-        Validates the webhook, substitutes payload into action template,
-        runs it through AI, and sends result to Telegram.
-        """
-        # Extract hook_id from path
-        hook_id = self.path.split("/api/webhook/", 1)[-1].strip("/")
-        if not hook_id:
-            self._send_json(400, {"error": "Missing webhook ID"})
-            return
-
-        content_length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(content_length) if content_length else b""
-        payload_str = body.decode("utf-8", errors="replace")
-
-        # Get signature header (GitHub uses X-Hub-Signature-256)
-        signature = self.headers.get("X-Hub-Signature-256", "") or self.headers.get("X-Signature", "")
-
-        try:
-            sys.path.insert(0, str(ENGINE_DIR))
-            sys.path.insert(0, str(ENGINE_DIR.parent))
-            from engine.webhooks import handle_webhook
-
-            prompt = handle_webhook(hook_id, payload_str, signature)
-            if not prompt:
-                self._send_json(404, {"error": "Webhook not found, inactive, or signature invalid"})
-                return
-
-            # Run the prompt through AI and send to Telegram asynchronously
-            self._send_json(200, {"status": "accepted", "hook_id": hook_id})
-
-            # Fire-and-forget: run AI + send to Telegram in background
-            import threading
-            threading.Thread(
-                target=self._process_webhook_async,
-                args=(hook_id, prompt),
-                daemon=True,
-            ).start()
-
-        except Exception as e:
-            logger.error(f"Webhook handler error: {e}")
-            self._send_json(500, {"error": str(e)})
-
-    def _process_webhook_async(self, hook_id: str, prompt: str):
-        """Process a webhook prompt through AI and send result to Telegram."""
-        import asyncio
-
-        async def _run():
-            try:
-                from engine.config import load_config as _lc, get_api_key, get_cli_timeout
-                config = _lc()
-                chat_id = config.get("telegram_user_id", "")
-                if not chat_id:
-                    logger.warning("No chat_id — cannot deliver webhook result")
-                    return
-
-                # Import AI and router
-                sys.path.insert(0, str(ENGINE_DIR))
-                from router import classify_message, pick_model
-                from ai import chat
-
-                task_type = classify_message(prompt)
-                provider, model = pick_model(task_type, config)
-                api_key = get_api_key(config)
-
-                system_prompt = (
-                    "You are Kiyomi, a personal assistant processing a webhook event. "
-                    "Summarize the event concisely and tell the user what happened. "
-                    "Keep your response under 1000 characters."
-                )
-
-                result = await chat(
-                    message=prompt,
-                    provider=provider,
-                    model=model,
-                    api_key=api_key if not provider.endswith("-cli") else "",
-                    system_prompt=system_prompt,
-                    history=[],
-                    cli_path=config.get("cli_path", ""),
-                    cli_timeout=get_cli_timeout(config),
-                )
-
-                # Send to Telegram
-                from telegram import Bot
-                token = config.get("telegram_token", "")
-                if token:
-                    bot = Bot(token=token)
-                    msg = f"🔔 *Webhook Triggered*\n\n{result}"
-                    try:
-                        await bot.send_message(chat_id=chat_id, text=msg[:4000], parse_mode="Markdown")
-                    except Exception:
-                        await bot.send_message(chat_id=chat_id, text=msg[:4000])
-
-                # macOS notification
-                try:
-                    from engine.notify import send_notification
-                    send_notification("Kiyomi — Webhook", f"Webhook {hook_id} triggered")
-                except Exception:
-                    pass
-
-            except Exception as e:
-                logger.error(f"Webhook async processing failed: {e}")
-
-        loop = asyncio.new_event_loop()
-        try:
-            loop.run_until_complete(_run())
-        finally:
-            loop.close()
 
     # --- Original Handlers ---
 

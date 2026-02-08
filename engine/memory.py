@@ -180,10 +180,10 @@ def save_fact(fact: str, category: str, user_dir: Optional[Path] = None) -> bool
 
 def load_all_memory(user_dir: Optional[Path] = None) -> str:
     """Load ALL memory for system prompt injection.
-    
+
     Returns formatted string with section headers.
-    Capped at 8000 chars. Prioritized by importance.
-    
+    Capped at 16000 chars. Prioritized by importance.
+
     Args:
         user_dir: Optional user-specific memory directory. If None, uses default MEMORY_DIR.
     """
@@ -192,7 +192,7 @@ def load_all_memory(user_dir: Optional[Path] = None) -> str:
     memory_dir.mkdir(parents=True, exist_ok=True)
     sections: list[str] = []
     total_chars = 0
-    max_chars = 8000
+    max_chars = 16000
 
     # 1. Category files (in priority order)
     for cat_key in LOAD_PRIORITY:
@@ -239,11 +239,12 @@ def load_all_memory(user_dir: Optional[Path] = None) -> str:
                 sections.append(f"**Saved Document ({doc_file.stem}):**\n{truncated}")
                 total_chars += len(truncated) + 30
 
-    # 4. Recent conversations (last 2 days)
+    # 4. Recent conversations (last 3 days at 2000 chars each)
     convos_dir = memory_dir / "conversations"
     if convos_dir.exists() and total_chars < max_chars:
         today = datetime.now()
-        for i in range(2):
+        day_labels = ["Today", "Yesterday", "2 days ago"]
+        for i in range(3):
             if total_chars >= max_chars:
                 break
             day = today - timedelta(days=i)
@@ -252,8 +253,8 @@ def load_all_memory(user_dir: Optional[Path] = None) -> str:
                 content = day_file.read_text(encoding="utf-8", errors="replace")
                 remaining = max_chars - total_chars
                 # Take last N chars to get most recent conversations
-                truncated = content[-min(800, remaining):]
-                label = "Today" if i == 0 else "Yesterday"
+                truncated = content[-min(2000, remaining):]
+                label = day_labels[i]
                 sections.append(f"**Recent ({label}):**\n{truncated}")
                 total_chars += len(truncated) + 20
 

@@ -1,8 +1,0 @@
-{
-  "name": "youtube-upload-workflow",
-  "version": "1.0.0",
-  "description": "Complete workflow for uploading videos to YouTube via browser automation or API",
-  "keywords": ["youtube", "upload", "video", "automation", "api", "metadata"],
-  "author": "Brock",
-  "license": "MIT"
-}

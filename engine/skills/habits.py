@@ -10,6 +10,7 @@ Features:
 - Weekly habit report card
 - Streak celebrations
 """
+from __future__ import annotations
 
 import json
 import logging

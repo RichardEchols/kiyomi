@@ -4,6 +4,8 @@ Periodically checks all skills for nudges/reminders and sends them via Telegram.
 
 This is NOT a skill — it's the scheduler that queries all skills.
 """
+from __future__ import annotations
+
 import asyncio
 import json
 import logging

@@ -3,6 +3,8 @@ Kiyomi Lite — Budget Tracker Skill
 Detects spending, income, and budget mentions in natural conversation.
 Extracts amounts, categories, and stores transactions.
 """
+from __future__ import annotations
+
 import re
 from datetime import datetime, timedelta
 from calendar import monthrange

@@ -5,6 +5,8 @@ Bots are created ahead of time via scripts/create_bots.py and stored in
 data/bot_pool.json. During onboarding, a user claims an unclaimed bot
 and gets a direct link to start chatting.
 """
+from __future__ import annotations
+
 import json
 import logging
 from pathlib import Path

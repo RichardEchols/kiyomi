@@ -8,6 +8,7 @@ Handles:
 - Spending summaries & insights
 - Secure token storage
 """
+from __future__ import annotations
 
 import json
 import logging

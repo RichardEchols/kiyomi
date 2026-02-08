@@ -9,6 +9,7 @@ Capabilities:
   4. Money Personality Insights — categorizes spending patterns
   5. Weekly Financial Report — formatted markdown digest
 """
+from __future__ import annotations
 
 import json
 import logging

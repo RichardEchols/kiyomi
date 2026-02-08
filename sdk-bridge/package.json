@@ -1,0 +1,14 @@
+{
+  "name": "kiyomi-sdk-bridge",
+  "version": "1.0.0",
+  "description": "Bridge between Kiyomi Telegram bot and Claude Agent SDK",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.36",
+    "express": "^4.21.0"
+  }
+}

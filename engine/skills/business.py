@@ -12,6 +12,7 @@ Core Features:
 7. Meeting Prep — Compile relevant notes and history
 8. Tax Time Helper — Revenue summary and tax preparation assistance
 """
+from __future__ import annotations
 
 import json
 import logging

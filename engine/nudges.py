@@ -13,6 +13,7 @@ Architecture:
 
 Called every 2-4 hours from scheduler.py.
 """
+from __future__ import annotations
 
 import json
 import logging

@@ -3,6 +3,8 @@ Kiyomi Lite — Get to Know You Flow
 Friendly onboarding conversation that builds a user profile.
 Runs after first setup, asks warm questions, saves everything to memory.
 """
+from __future__ import annotations
+
 import json
 import logging
 from pathlib import Path

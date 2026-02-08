@@ -6,6 +6,8 @@ This file handles:
 2. Building skill context for the AI system prompt
 3. Starting the proactive check loop
 """
+from __future__ import annotations
+
 import logging
 from typing import Optional
 
