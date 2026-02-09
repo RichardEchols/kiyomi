@@ -3,132 +3,215 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Kiyomi — Setup</title>
+    <title>Kiyomi Setup</title>
     <link rel="stylesheet" href="style.css">
+    <style>
+        /* v5.0 additions */
+        .identity-editor {
+            width: 100%;
+            min-height: 200px;
+            padding: 14px 16px;
+            border: 1.5px solid var(--border);
+            border-radius: 12px;
+            font-size: 14px;
+            font-family: 'SF Mono', 'Menlo', monospace;
+            color: var(--text);
+            background: var(--bg);
+            transition: border-color var(--transition), box-shadow var(--transition);
+            outline: none;
+            resize: vertical;
+            line-height: 1.5;
+        }
+        .identity-editor:focus {
+            border-color: var(--pink);
+            box-shadow: 0 0 0 3px var(--pink-light);
+        }
+        .preset-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin: 16px 0;
+        }
+        .preset-card {
+            border: 2px solid var(--border);
+            border-radius: 12px;
+            padding: 14px 10px;
+            cursor: pointer;
+            transition: all var(--transition);
+            text-align: center;
+        }
+        .preset-card:hover {
+            border-color: var(--pink-light);
+            transform: translateY(-1px);
+            box-shadow: var(--shadow);
+        }
+        .preset-card.selected {
+            border-color: var(--pink);
+            background: var(--pink-light);
+        }
+        .preset-emoji { font-size: 24px; margin-bottom: 4px; }
+        .preset-name { font-weight: 600; font-size: 14px; color: var(--text); }
+        .preset-desc { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
+        .cli-card {
+            border: 2px solid var(--border);
+            border-radius: 14px;
+            padding: 16px;
+            cursor: pointer;
+            transition: all var(--transition);
+            text-align: left;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            margin-bottom: 10px;
+        }
+        .cli-card:hover:not(.unavailable) {
+            border-color: var(--pink-light);
+            transform: translateY(-1px);
+            box-shadow: var(--shadow);
+        }
+        .cli-card.selected {
+            border-color: var(--pink);
+            background: var(--pink-light);
+        }
+        .cli-card.unavailable {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .cli-icon { font-size: 28px; flex-shrink: 0; }
+        .cli-info { flex: 1; }
+        .cli-name { font-weight: 600; font-size: 15px; }
+        .cli-sub { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+        .cli-badge {
+            font-size: 11px;
+            font-weight: 600;
+            padding: 3px 10px;
+            border-radius: 6px;
+            flex-shrink: 0;
+        }
+        .cli-badge.installed {
+            background: #E8F9ED;
+            color: #1B7D3C;
+        }
+        .cli-badge.missing {
+            background: #FFF3E0;
+            color: #E65100;
+        }
+        .section-label {
+            text-align: left;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+            margin-top: 20px;
+        }
+        .or-claim {
+            text-align: center;
+            margin: 16px 0;
+            font-size: 14px;
+            color: var(--text-hint);
+        }
+        .pool-btn {
+            display: inline-block;
+            background: var(--pink-light);
+            color: var(--pink-dark);
+            border: 1.5px solid var(--pink);
+            padding: 10px 20px;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 600;
+            font-family: inherit;
+            cursor: pointer;
+            transition: all var(--transition);
+        }
+        .pool-btn:hover {
+            background: var(--pink);
+            color: white;
+        }
+        .claimed-info {
+            background: #E8F9ED;
+            border-radius: 10px;
+            padding: 14px 16px;
+            margin-top: 12px;
+            text-align: left;
+            font-size: 14px;
+        }
+        .claimed-name {
+            font-weight: 600;
+            color: #1B7D3C;
+        }
+    </style>
 </head>
 <body>
     <div class="app">
-        <!-- Step 1: Welcome -->
+
+        <!-- Step 1: Welcome + Name + Preset -->
         <div class="step active" id="step-1">
             <div class="card">
                 <div class="emoji-large">🌸</div>
-                <h1>Hi, I'm Kiyomi</h1>
-                <p class="subtitle">Your personal AI assistant. Let's get you set up — it only takes a minute.</p>
+                <h1>Welcome to Kiyomi</h1>
+                <p class="subtitle">Your AI assistant on Telegram. Pick a preset and make it yours.</p>
+
                 <div class="input-group">
-                    <label for="user-name">What's your name?</label>
-                    <input type="text" id="user-name" placeholder="e.g. Sarah" autocomplete="given-name" autofocus>
+                    <label>Your Name</label>
+                    <input type="text" id="user-name" placeholder="What should Kiyomi call you?" autocomplete="off">
                 </div>
 
-                <div class="input-group" style="margin-top: 20px;">
-                    <label>How should I talk to you?</label>
-                    <div class="personality-grid" id="personality-grid">
-                        <div class="personality-card selected" onclick="selectPersonality('professional')" id="pers-professional">
-                            <div class="pers-emoji">💼</div>
-                            <div class="pers-name">Professional</div>
-                            <div class="pers-desc">Clear, efficient, gets things done</div>
-                        </div>
-                        <div class="personality-card" onclick="selectPersonality('friendly')" id="pers-friendly">
-                            <div class="pers-emoji">😊</div>
-                            <div class="pers-name">Friendly</div>
-                            <div class="pers-desc">Warm, casual, like a good friend</div>
-                        </div>
-                        <div class="personality-card" onclick="selectPersonality('coach')" id="pers-coach">
-                            <div class="pers-emoji">🏆</div>
-                            <div class="pers-name">Coach</div>
-                            <div class="pers-desc">Encouraging, pushes you forward</div>
-                        </div>
-                        <div class="personality-card" onclick="selectPersonality('minimal')" id="pers-minimal">
-                            <div class="pers-emoji">⚡</div>
-                            <div class="pers-name">Minimal</div>
-                            <div class="pers-desc">Short, direct, no fluff</div>
-                        </div>
-                    </div>
+                <div class="section-label">Choose a preset</div>
+                <div class="preset-grid" id="preset-grid">
+                    <!-- Filled by JS -->
                 </div>
 
-                <button class="btn-primary" onclick="nextStep(1)" id="btn-step1">Continue</button>
+                <div class="section-label" style="margin-top: 24px;">Customize (optional)</div>
+                <textarea class="identity-editor" id="identity-editor" placeholder="Your assistant's personality and instructions will appear here..."></textarea>
+
+                <div style="margin-top: 24px;">
+                    <button class="btn-primary" id="btn-step1-next" disabled>Continue</button>
+                </div>
+            </div>
+            <div class="progress-dots">
+                <div class="dot active"></div>
+                <div class="dot"></div>
+                <div class="dot"></div>
             </div>
         </div>
 
-        <!-- Step 2: Connect AI -->
+        <!-- Step 2: Connect AI (CLI selection) -->
         <div class="step" id="step-2">
             <div class="card">
-                <div class="emoji-large">🧠</div>
+                <div class="emoji-large">🤖</div>
                 <h1>Connect Your AI</h1>
-                <p class="subtitle">Kiyomi works with your existing AI subscription — no extra costs, no API keys.</p>
+                <p class="subtitle">Kiyomi uses your existing AI subscription. Pick which one to use.</p>
 
-                <!-- Subscription picker -->
-                <div class="provider-grid" id="sub-grid">
-                    <div class="provider-card" onclick="selectSubscription('claude')" id="sub-claude">
-                        <div class="provider-icon">🤖</div>
-                        <div class="provider-name">Claude</div>
-                        <div class="provider-tag">Pro / Max · $20/mo</div>
-                    </div>
-                    <div class="provider-card" onclick="selectSubscription('codex')" id="sub-codex">
-                        <div class="provider-icon">💬</div>
-                        <div class="provider-name">ChatGPT</div>
-                        <div class="provider-tag">Plus · $20/mo</div>
-                    </div>
-                    <div class="provider-card" onclick="selectSubscription('gemini')" id="sub-gemini">
-                        <div class="provider-icon">✨</div>
-                        <div class="provider-name">Gemini</div>
-                        <div class="provider-tag">Google One AI · $20/mo</div>
+                <div id="cli-list">
+                    <!-- Filled by JS -->
+                    <div style="text-align: center; padding: 20px; color: var(--text-hint);">
+                        Detecting installed CLIs...
                     </div>
                 </div>
 
-                <!-- Connection status panel -->
-                <div id="connect-panel" class="walkthrough-box" style="display:none;">
-                    <div id="connect-checking" style="display:none;">
-                        <div class="import-progress">
-                            <div class="spinner"></div>
-                            <div>
-                                <strong id="connect-action">Checking...</strong>
-                                <p class="progress-hint" id="connect-hint">This may open your browser to sign in.</p>
-                            </div>
-                        </div>
-                    </div>
-                    <div id="connect-ready" style="display:none;">
-                        <p class="walkthrough-note" id="connect-result"></p>
-                        <p id="connect-account" style="margin:4px 0 0; font-size:13px; color:var(--text-secondary);"></p>
-                        <button class="btn-outline" id="btn-switch-account" onclick="switchAccount()" style="display:none; margin-top:8px; font-size:12px;">Not your account? Sign in with a different one</button>
-                    </div>
-                    <div id="connect-needs-auth" style="display:none;">
-                        <p class="walkthrough-title" id="auth-title">Sign in to connect</p>
-                        <p style="margin-bottom:12px; font-size:14px; color:var(--text-secondary);" id="auth-desc">
-                            Click below to sign in with your subscription account. A browser window will open.
-                        </p>
-                        <button class="btn-action" onclick="triggerAuth()" id="btn-auth">Sign In</button>
+                <div id="no-cli-help" style="display: none; margin-top: 16px;">
+                    <div class="help-panel">
+                        <p><strong>No AI tools found.</strong> Install one to get started:</p>
+                        <ul style="list-style: none; padding: 0; margin-top: 12px;">
+                            <li style="margin-bottom: 8px;">🟣 <strong>Claude</strong> ($20/mo) — <code>npm install -g @anthropic-ai/claude-code</code></li>
+                            <li style="margin-bottom: 8px;">🟢 <strong>Codex</strong> ($20/mo) — <code>npm install -g @openai/codex</code></li>
+                            <li style="margin-bottom: 8px;">🔵 <strong>Gemini</strong> (Free!) — <code>npm install -g @google/gemini-cli</code></li>
+                        </ul>
+                        <p style="margin-top: 12px;">After installing, refresh this page.</p>
                     </div>
                 </div>
 
-                <!-- Advanced: API key fallback (collapsed) -->
-                <details id="api-key-fallback" style="margin-top: 16px;">
-                    <summary style="cursor:pointer; color: var(--text-hint); font-size: 13px;">Advanced: Use an API key instead</summary>
-                    <div style="margin-top: 12px;">
-                        <div class="provider-grid" style="margin-bottom: 12px;">
-                            <div class="provider-card" onclick="selectProvider('gemini')" id="prov-gemini" style="padding: 12px 8px;">
-                                <div class="provider-name" style="font-size: 13px;">Gemini</div>
-                                <div class="provider-tag free" style="font-size: 10px;">Free</div>
-                            </div>
-                            <div class="provider-card" onclick="selectProvider('anthropic')" id="prov-anthropic" style="padding: 12px 8px;">
-                                <div class="provider-name" style="font-size: 13px;">Claude</div>
-                                <div class="provider-tag" style="font-size: 10px;">Paid</div>
-                            </div>
-                            <div class="provider-card" onclick="selectProvider('openai')" id="prov-openai" style="padding: 12px 8px;">
-                                <div class="provider-name" style="font-size: 13px;">ChatGPT</div>
-                                <div class="provider-tag" style="font-size: 10px;">Paid</div>
-                            </div>
-                        </div>
-                        <div class="input-group" id="key-group">
-                            <label for="api-key">Paste your API key:</label>
-                            <input type="password" id="api-key" placeholder="AIzaSy... or sk-...">
-                        </div>
-                    </div>
-                </details>
-
-                <div class="btn-row" style="margin-top: 16px;">
-                    <button class="btn-secondary" onclick="prevStep(2)">Back</button>
-                    <button class="btn-primary" onclick="nextStep(2)" id="btn-step2">Continue</button>
+                <div class="btn-row" style="margin-top: 24px;">
+                    <button class="btn-text" onclick="goToStep(1)">Back</button>
+                    <button class="btn-primary" id="btn-step2-next" disabled>Continue</button>
                 </div>
+            </div>
+            <div class="progress-dots">
+                <div class="dot"></div>
+                <div class="dot active"></div>
+                <div class="dot"></div>
             </div>
         </div>
 
@@ -137,193 +220,90 @@
             <div class="card">
                 <div class="emoji-large">💬</div>
                 <h1>Connect Telegram</h1>
-                <p class="subtitle">Kiyomi lives in Telegram — message her like texting a friend. Takes about 60 seconds.</p>
+                <p class="subtitle">Create a Telegram bot to chat with your AI.</p>
 
-                <div id="tg-manual">
+                <div id="pool-section">
+                    <!-- Instant bot claim if pool available -->
+                </div>
+
+                <div id="manual-section">
                     <div class="walkthrough-box">
-                        <p class="walkthrough-title">Create your personal bot:</p>
+                        <div class="walkthrough-title">Create your bot in 60 seconds</div>
                         <div class="walkthrough-steps">
                             <div class="wt-step">
-                                <span class="wt-num">1</span>
+                                <div class="wt-num">1</div>
                                 <div>
-                                    <p><strong>Get Telegram</strong> if you don't have it:</p>
-                                    <div class="wt-buttons">
-                                        <a href="https://apps.apple.com/app/telegram-messenger/id686449807" target="_blank" class="btn-action btn-small">iPhone / iPad</a>
-                                        <a href="https://play.google.com/store/apps/details?id=org.telegram.messenger" target="_blank" class="btn-action btn-small">Android</a>
-                                        <a href="https://desktop.telegram.org" target="_blank" class="btn-action btn-small">Mac / PC</a>
-                                    </div>
+                                    <p>Open <a href="https://t.me/BotFather" target="_blank" class="tg-link">@BotFather</a> in Telegram</p>
                                 </div>
                             </div>
                             <div class="wt-step">
-                                <span class="wt-num">2</span>
+                                <div class="wt-num">2</div>
                                 <div>
-                                    <p><strong>Open BotFather</strong> in Telegram:</p>
-                                    <a href="https://t.me/BotFather" target="_blank" class="btn-action">Open @BotFather →</a>
+                                    <p>Send <code>/newbot</code> and follow the prompts</p>
                                 </div>
                             </div>
                             <div class="wt-step">
-                                <span class="wt-num">3</span>
+                                <div class="wt-num">3</div>
                                 <div>
-                                    <p>Send <strong>/newbot</strong>, pick any name, pick a username ending in "bot"</p>
-                                </div>
-                            </div>
-                            <div class="wt-step">
-                                <span class="wt-num">4</span>
-                                <div>
-                                    <p><strong>Paste the token</strong> BotFather gives you:</p>
+                                    <p>Copy the token and paste it below</p>
                                 </div>
                             </div>
                         </div>
                     </div>
+
                     <div class="input-group">
-                        <label for="tg-token">Bot token:</label>
-                        <input type="text" id="tg-token" placeholder="123456789:ABCdefGhIjKlMnOpQrStUvWxYz">
+                        <label>
+                            Bot Token
+                            <a href="https://t.me/BotFather" target="_blank" class="help-link">Open BotFather →</a>
+                        </label>
+                        <input type="text" id="telegram-token" placeholder="Paste your bot token here..." autocomplete="off">
+                        <div class="token-example">e.g. 123456789:ABCdefGHIjklMNOpqrSTUvwxYZ</div>
                     </div>
                 </div>
 
-                <div class="btn-row" style="margin-top: 16px;">
-                    <button class="btn-secondary" onclick="prevStep(3)">Back</button>
-                    <button class="btn-primary" onclick="nextStep(3)" id="btn-step3">Continue</button>
+                <div class="btn-row" style="margin-top: 24px;">
+                    <button class="btn-text" onclick="goToStep(2)">Back</button>
+                    <button class="btn-primary" id="btn-finish" disabled>Finish Setup</button>
                 </div>
+            </div>
+            <div class="progress-dots">
+                <div class="dot"></div>
+                <div class="dot"></div>
+                <div class="dot active"></div>
             </div>
         </div>
 
-        <!-- Step 4: Import Chats (Optional) -->
-        <div class="step" id="step-4">
-            <div class="card">
-                <div class="emoji-large">📚</div>
-                <h1>Import Your Chats</h1>
-                <p class="subtitle">Optional: Bring your AI chat history so I already know you from day one.</p>
-
-                <div class="btn-row" style="margin-bottom: 16px;">
-                    <button class="btn-primary" onclick="skipImport()" style="flex: 2;">Skip — I'll learn as we go! →</button>
-                </div>
-
-                <details id="import-guide">
-                    <summary style="cursor:pointer; color: var(--pink); font-weight: 600; margin-bottom: 12px;">📋 I want to import my chats — show me how</summary>
-
-                    <div class="walkthrough-box" style="margin-top: 8px;">
-                        <div class="walkthrough-steps">
-                            <div class="wt-step">
-                                <span class="wt-num">📱</span>
-                                <div>
-                                    <p><strong>From Google Gemini:</strong></p>
-                                    <p>1. Go to <a href="https://takeout.google.com" target="_blank" class="btn-action btn-small">Google Takeout</a></p>
-                                    <p>2. Click "Deselect all", then scroll down and check <strong>"Gemini Apps"</strong></p>
-                                    <p>3. Click "Next step" → "Create export" → wait for email</p>
-                                    <p>4. Download the .zip file and drop it below</p>
-                                </div>
-                            </div>
-                            <div class="wt-step">
-                                <span class="wt-num">💬</span>
-                                <div>
-                                    <p><strong>From ChatGPT:</strong></p>
-                                    <p>1. Go to <a href="https://chatgpt.com/#settings" target="_blank" class="btn-action btn-small">ChatGPT Settings</a></p>
-                                    <p>2. Click "Data controls" → "Export data" → "Confirm export"</p>
-                                    <p>3. Check your email for the download link</p>
-                                    <p>4. Unzip and drop <strong>conversations.json</strong> below</p>
-                                </div>
-                            </div>
-                            <div class="wt-step">
-                                <span class="wt-num">🤖</span>
-                                <div>
-                                    <p><strong>From Claude:</strong></p>
-                                    <p>1. Go to <a href="https://claude.ai/settings" target="_blank" class="btn-action btn-small">Claude Settings</a></p>
-                                    <p>2. Scroll to "Export Data" → click "Export"</p>
-                                    <p>3. Check your email for the download</p>
-                                    <p>4. Drop the .json file below</p>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="drop-zone" id="drop-zone" ondrop="handleDrop(event)" ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)">
-                        <div class="drop-icon">📁</div>
-                        <p class="drop-text">Drag & drop your export file here</p>
-                        <p class="drop-hint">Supports: .json or .zip files</p>
-                        <input type="file" id="import-file" accept=".json,.zip" style="display:none" onchange="handleFileSelect(event)">
-                        <button class="btn-outline" onclick="document.getElementById('import-file').click()">Or choose a file</button>
-                    </div>
-                    <div id="import-status" class="import-status" style="display:none;"></div>
-                    
-                    <div class="btn-row" style="margin-top: 12px;">
-                        <button class="btn-secondary" onclick="prevStep(4)">Back</button>
-                        <button class="btn-primary" onclick="nextStep(4)">Import & Continue</button>
-                    </div>
-                </details>
-
-                <div class="btn-row" style="margin-top: 4px;">
-                    <button class="btn-secondary" onclick="prevStep(4)">Back</button>
-                </div>
-            </div>
-        </div>
-
-        <!-- Step 5: All Done -->
-        <div class="step" id="step-5">
+        <!-- Step 4: Done! -->
+        <div class="step" id="step-done">
             <div class="card done-card">
                 <div class="confetti">🎉</div>
-                <div class="emoji-large">🌸</div>
-                <h1>You're all set, <span id="done-name">friend</span>!</h1>
-                <p class="subtitle" id="done-subtitle">Setting up your assistant...</p>
-                
-                <div id="done-loading" style="padding: 20px; text-align: center;">
-                    <p>⏳ Installing AI packages (first time only, about 30 seconds)...</p>
-                </div>
+                <h1>You're all set!</h1>
+                <p class="subtitle">Kiyomi is running. Open Telegram and say hello.</p>
 
-                <div id="done-ready" style="display: none;">
-                    <div class="walkthrough-box" id="find-bot-box">
-                        <p class="walkthrough-title">📱 Now let's start chatting!</p>
-                        <div class="walkthrough-steps">
-                            <div class="wt-step">
-                                <span class="wt-num">1</span>
-                                <p>Open Telegram on your phone or computer</p>
-                            </div>
-                            <div class="wt-step">
-                                <span class="wt-num">2</span>
-                                <div>
-                                    <p>Click this link to open your assistant:</p>
-                                    <a href="#" id="bot-deep-link" target="_blank" class="btn-action">Open Your Assistant in Telegram →</a>
-                                </div>
-                            </div>
-                            <div class="wt-step">
-                                <span class="wt-num">3</span>
-                                <p>Tap <strong>Start</strong> and say hello! 👋</p>
-                            </div>
-                        </div>
+                <div class="done-features">
+                    <div class="feature-item">
+                        <span>💬</span>
+                        <p>Chat naturally — your AI remembers context</p>
                     </div>
-
-                    <div class="done-features">
-                        <div class="feature-item">
-                            <span>💭</span>
-                            <p>I remember our conversations</p>
-                        </div>
-                        <div class="feature-item">
-                            <span>⏰</span>
-                            <p>I can set reminders for you</p>
-                        </div>
-                        <div class="feature-item">
-                            <span>🧠</span>
-                            <p>I learn your preferences over time</p>
-                        </div>
-                        <div class="feature-item">
-                            <span>📱</span>
-                            <p>Message me from any device via Telegram</p>
-                        </div>
+                    <div class="feature-item">
+                        <span>📸</span>
+                        <p>Send photos for instant analysis</p>
+                    </div>
+                    <div class="feature-item">
+                        <span>🔄</span>
+                        <p>Switch AI providers anytime with /cli</p>
+                    </div>
+                    <div class="feature-item">
+                        <span>✨</span>
+                        <p>Customize in plain English — just ask</p>
                     </div>
                 </div>
 
-                <p class="done-hint">I'll be in your menu bar 🌸 whenever you need me.</p>
+                <a id="telegram-link" href="#" target="_blank" class="btn-primary btn-large" style="display: inline-block; text-decoration: none;">Open Telegram</a>
+                <p class="done-hint">Kiyomi runs in your menu bar. Close this window anytime.</p>
             </div>
         </div>
 
-        <!-- Progress Dots -->
-        <div class="progress-dots">
-            <span class="dot active" data-step="1"></span>
-            <span class="dot" data-step="2"></span>
-            <span class="dot" data-step="3"></span>
-            <span class="dot" data-step="4"></span>
-            <span class="dot" data-step="5"></span>
-        </div>
     </div>
 
     <script src="script.js"></script>

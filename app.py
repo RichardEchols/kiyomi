@@ -86,10 +86,10 @@ def is_setup_complete() -> bool:
             config = json.load(f)
         if not config.get("setup_complete", False):
             return False
-        # Must have at least a provider and telegram token
-        has_provider = bool(config.get("provider") or config.get("subscription"))
+        # Must have at least a CLI and telegram token
+        has_cli = bool(config.get("cli") or config.get("provider"))
         has_telegram = bool(config.get("telegram_token"))
-        return has_provider and has_telegram
+        return has_cli and has_telegram
     except Exception:
         return False
 
@@ -171,10 +171,7 @@ def start_engine():
             import importlib
             # Clear any cached imports to pick up fresh
             for mod_name in list(sys.modules.keys()):
-                if mod_name.startswith('engine.') or mod_name in (
-                    'config', 'router', 'ai', 'memory', 'reminders',
-                    'skills_integration', 'proactive'
-                ):
+                if mod_name.startswith('engine.'):
                     del sys.modules[mod_name]
             
             from engine.bot import main_threaded
@@ -298,7 +295,7 @@ class OnboardingHandler(BaseHTTPRequestHandler):
                 data["config"] = {
                     "name": cfg.get("name", ""),
                     "timezone": cfg.get("timezone", "UTC"),
-                    "provider": cfg.get("provider", ""),
+                    "cli": cfg.get("cli", ""),
                 }
         except Exception:
             pass
@@ -470,6 +467,32 @@ class OnboardingHandler(BaseHTTPRequestHandler):
                 self._send_json(200, {"has_bots": False, "total": 0, "available": 0, "claimed": 0})
             return
 
+        # API: List available presets
+        if path == "/api/presets":
+            try:
+                presets_dir = _resource_path("presets")
+                presets = []
+                if presets_dir.exists():
+                    for f in sorted(presets_dir.iterdir()):
+                        if f.suffix == ".md":
+                            content = f.read_text(encoding="utf-8", errors="replace")
+                            # Extract title from first heading
+                            title = f.stem.replace("-", " ").title()
+                            for line in content.splitlines():
+                                if line.startswith("# "):
+                                    title = line[2:].strip()
+                                    break
+                            presets.append({
+                                "id": f.stem,
+                                "title": title,
+                                "content": content,
+                            })
+                self._send_json(200, {"presets": presets})
+            except Exception as e:
+                logger.error(f"Presets error: {e}")
+                self._send_json(500, {"error": str(e)})
+            return
+
         # API: CLI status (detect installed + authenticated CLIs)
         if path == "/api/cli/status":
             try:
@@ -583,6 +606,8 @@ class OnboardingHandler(BaseHTTPRequestHandler):
         """Handle API endpoints."""
         if self.path == "/api/config":
             self._handle_config()
+        elif self.path == "/api/identity":
+            self._handle_identity_save()
         elif self.path == "/api/import":
             self._handle_import()
         elif self.path == "/api/telegram/claim":
@@ -602,93 +627,44 @@ class OnboardingHandler(BaseHTTPRequestHandler):
 
     def _handle_agent_status(self):
         """Report this agent's status."""
-        try:
-            from engine.gateway import get_registry
-            registry = get_registry()
-            self_info = registry.self_agent if registry else None
-            self._send_json(200, {
-                "status": "online",
-                "agent_id": self_info.agent_id if self_info else "kiyomi",
-                "name": self_info.name if self_info else "Kiyomi",
-                "uptime": time.time(),
-            })
-        except Exception as e:
-            self._send_json(200, {"status": "online", "error": str(e)})
+        self._send_json(200, {
+            "status": "online",
+            "agent_id": "kiyomi",
+            "name": "Kiyomi",
+            "uptime": time.time(),
+        })
 
     def _handle_agent_info(self):
         """Report this agent's identity and capabilities."""
-        try:
-            from engine.gateway import get_registry
-            registry = get_registry()
-            if registry and registry.self_agent:
-                self._send_json(200, registry.self_agent.to_dict())
-            else:
-                self._send_json(200, {"agent_id": "kiyomi", "name": "Kiyomi"})
-        except Exception as e:
-            self._send_json(500, {"error": str(e)})
+        self._send_json(200, {"agent_id": "kiyomi", "name": "Kiyomi", "version": "5.0.0"})
 
     def _handle_agent_team(self):
         """List all agents in the team."""
-        try:
-            from engine.gateway import get_registry
-            registry = get_registry()
-            if registry:
-                self._send_json(200, {"agents": registry.list_agents()})
-            else:
-                self._send_json(200, {"agents": []})
-        except Exception as e:
-            self._send_json(500, {"error": str(e)})
+        self._send_json(200, {"agents": []})
 
     def _handle_agent_task(self):
-        """Receive a task from another agent."""
-        content_length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(content_length)
-        try:
-            task_data = json.loads(body)
-            from engine.gateway import get_communicator
-            comm = get_communicator()
-            if not comm:
-                self._send_json(503, {"status": "error", "error": "Gateway not initialized"})
-                return
-
-            # Schedule async execution (can't await in sync handler)
-            import asyncio
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.ensure_future(comm.handle_incoming_task(task_data))
-                else:
-                    loop.run_until_complete(comm.handle_incoming_task(task_data))
-            except RuntimeError:
-                # No event loop in this thread — create one
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(comm.handle_incoming_task(task_data))
-
-            self._send_json(200, {"status": "accepted", "task_id": task_data.get("task_id", "")})
-        except Exception as e:
-            logger.error(f"Agent task handler error: {e}")
-            self._send_json(500, {"status": "error", "error": str(e)})
+        """Receive a task from another agent (stub — not used in consumer)."""
+        self._send_json(200, {"status": "accepted"})
 
     def _handle_agent_result(self):
-        """Receive a task result callback from another agent."""
+        """Receive a task result (stub — not used in consumer)."""
+        self._send_json(200, {"status": "received"})
+
+    # --- Identity + Config Handlers ---
+
+    def _handle_identity_save(self):
+        """Save identity.md content from onboarding."""
         content_length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(content_length)
         try:
-            result_data = json.loads(body)
-            from engine.gateway import get_communicator
-            comm = get_communicator()
-            if comm:
-                comm.handle_result(
-                    result_data.get("task_id", ""),
-                    result_data.get("result", "")
-                )
-            self._send_json(200, {"status": "received"})
+            data = json.loads(body)
+            identity_content = data.get("content", "")
+            identity_path = CONFIG_DIR / "identity.md"
+            identity_path.write_text(identity_content, encoding="utf-8")
+            self._send_json(200, {"status": "ok"})
         except Exception as e:
-            logger.error(f"Agent result handler error: {e}")
-            self._send_json(500, {"status": "error", "error": str(e)})
-
-    # --- Original Handlers ---
+            logger.error(f"Identity save error: {e}")
+            self._send_json(500, {"error": str(e)})
 
     def _handle_config(self):
         """Save config from onboarding wizard."""
@@ -715,64 +691,8 @@ class OnboardingHandler(BaseHTTPRequestHandler):
             self._send_json(500, {"error": str(e)})
     
     def _handle_import(self):
-        """Accept uploaded file and run import_brain processing."""
-        import tempfile
-        
-        try:
-            filename, file_data = self._parse_multipart()
-            
-            if not filename or not file_data:
-                self._send_json(400, {"error": "No file uploaded. Send as multipart/form-data with field name 'file'."})
-                return
-            
-            # Validate extension
-            if not (filename.endswith('.json') or filename.endswith('.zip')):
-                self._send_json(400, {"error": f"Unsupported file type: {filename}. Use .json or .zip"})
-                return
-            
-            # Save to temp file and process
-            suffix = '.zip' if filename.endswith('.zip') else '.json'
-            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-                tmp.write(file_data)
-                tmp_path = tmp.name
-            
-            logger.info(f"Importing file: {filename} ({len(file_data)} bytes)")
-            
-            # Run import_brain
-            sys.path.insert(0, str(APP_DIR))
-            from import_brain import import_file
-            result = import_file(tmp_path)
-            
-            # Clean up temp file
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            
-            # Update config to mark import done
-            if CONFIG_FILE.exists():
-                with open(CONFIG_FILE) as f:
-                    config = json.load(f)
-                config["imported_chats"] = True
-                config["import_source"] = result.source
-                with open(CONFIG_FILE, "w") as f:
-                    json.dump(config, f, indent=2)
-            
-            self._send_json(200, {
-                "status": "ok",
-                "conversations": result.conversations,
-                "messages": result.messages,
-                "facts_count": len(result.facts),
-                "facts": result.facts[:50],
-                "source": result.source,
-                "errors": result.errors,
-            })
-            
-            logger.info(f"Import complete: {result.conversations} conversations, {result.messages} messages, {len(result.facts)} facts")
-            
-        except Exception as e:
-            logger.error(f"Import error: {e}")
-            self._send_json(500, {"error": str(e)})
+        """File import (deprecated in v5.0 — identity is managed via presets)."""
+        self._send_json(200, {"status": "ok", "message": "Import not needed in v5.0. Edit your identity via Telegram."})
     
     def _handle_telegram_claim(self):
         """Claim a pre-made Telegram bot from the pool."""

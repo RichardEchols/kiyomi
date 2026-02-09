@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
 """
-Kiyomi — Telegram Bot
-Simple. Clean. Just works.
-
-User messages Kiyomi → Kiyomi responds using their AI → memory builds silently.
-No terminal. No dashboard. No complexity visible.
+Kiyomi v5.0 — Multi-CLI Telegram Bridge
+Telegram message → CLI subprocess → response back to Telegram.
+Works with Claude CLI, Codex CLI, and Gemini CLI.
+~300 lines. No bloat.
 """
 import asyncio
+import json
 import logging
+import os
+import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 # Add engine dir to path
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from telegram import Update, Bot
 from telegram.ext import (
@@ -22,1734 +26,391 @@ from telegram.ext import (
 )
 from telegram.constants import ChatAction
 
-from engine.config import (
-    ensure_dirs,
-    load_config,
-    save_config,
-    get_api_key,
-    get_cli_timeout,
-    CONFIG_DIR,
-    MEMORY_DIR,
-)
-from router import classify_message, pick_model
-from ai import chat
-from engine.memory import log_conversation, get_recent_context, extract_and_remember, load_all_memory, extract_facts_from_message, save_fact, export_memory, lookup_person
-from engine.multi_user import UserManager
-from engine.reminders import parse_reminder_from_message, add_reminder, list_active_reminders
-from engine.cron import add_cron, list_crons, remove_cron
-from engine.webhooks import create_webhook, list_webhooks, delete_webhook
-from updater import is_update_request, check_for_updates, perform_update, restart_bot
-from skills_integration import (
-    run_post_message_hook, get_skills_prompt_context,
-    get_skill_capabilities_prompt
-)
-from url_reader import find_urls, read_urls_in_message
-from get_to_know import (
-    is_onboarding_active, is_onboarding_complete,
-    start_onboarding, handle_onboarding_message
-)
-from image_gen import is_image_request, generate_image
-try:
-    from computer_control import is_computer_action, execute_computer_action
-    HAS_COMPUTER_CONTROL = True
-except ImportError:
-    HAS_COMPUTER_CONTROL = False
+from engine.config import load_config, save_config, CONFIG_DIR, IDENTITY_FILE, WORKSPACE
+from engine.cli_adapter import get_adapter, sync_identity_file, get_env, detect_available_clis
+from engine.updater import is_update_request, check_for_updates, perform_update, restart_bot
 
-HAS_GATEWAY = False
+logger = logging.getLogger("kiyomi.bot")
 
-# Ensure config/logs dirs exist before configuring logging.
-ensure_dirs()
-_bot_log_handlers = [logging.FileHandler(CONFIG_DIR / "logs" / "kiyomi.log")]
-if sys.stdout is not None:
-    _bot_log_handlers.append(logging.StreamHandler())
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=_bot_log_handlers,
-)
-logger = logging.getLogger("kiyomi")
-
-# Multi-user manager
-user_manager = UserManager()
-
-# Simple conversation history (in-memory, last 20 messages)
-# Persisted to disk so restarts don't lose context
-HISTORY_FILE = CONFIG_DIR / "conversation_history.json"
-conversation_history: list = []
+# --- Session tracking ---
+# {chat_id: session_id} — persist CLI sessions per chat
+SESSIONS_FILE = CONFIG_DIR / "sessions.json"
 
 
-def _load_conversation_history():
-    """Load conversation history from disk on startup."""
-    global conversation_history
-    try:
-        import json
-        if HISTORY_FILE.exists():
-            with open(HISTORY_FILE) as f:
-                conversation_history[:] = json.load(f)
-            logger.info(f"Loaded {len(conversation_history)} messages from history")
-    except Exception as e:
-        logger.warning(f"Could not load conversation history: {e}")
+def _load_sessions() -> dict:
+    if SESSIONS_FILE.exists():
+        try:
+            with open(SESSIONS_FILE) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass
+    return {}
 
 
-def _save_conversation_history():
-    """Save conversation history to disk after each message."""
-    try:
-        import json
-        with open(HISTORY_FILE, "w") as f:
-            json.dump(conversation_history[-40:], f)
-    except Exception as e:
-        logger.warning(f"Could not save conversation history: {e}")
+def _save_sessions(sessions: dict):
+    with open(SESSIONS_FILE, "w") as f:
+        json.dump(sessions, f, indent=2)
 
 
-# Load history on module import
-_load_conversation_history()
+sessions = _load_sessions()
 
 
-def get_bot_name(config: dict) -> str:
-    """Get the bot's display name. Defaults to 'Kiyomi' if not set."""
-    return config.get("bot_name", "Kiyomi")
+# --- File detection ---
+def _find_new_files(workspace: Path, since: float) -> list[Path]:
+    """Find files created in workspace since timestamp."""
+    new_files = []
+    skip = {"CLAUDE.md", "AGENTS.md", "GEMINI.md", "identity.md", "sessions.json", "config.json"}
+    for item in workspace.iterdir():
+        if item.name.startswith(".") or item.name in skip:
+            continue
+        if item.is_file() and item.stat().st_mtime > since:
+            new_files.append(item)
+    return new_files
 
 
-def build_system_prompt(config: dict, user_dir: Path = None) -> str:
-    """Build personality prompt using the bot's actual name."""
+# --- Telegram Handlers ---
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /start command."""
+    config = load_config()
     name = config.get("name", "there")
-    bot_name = get_bot_name(config)
-    
-    # Load deep memory (categorized facts, documents, recent conversations)
-    memory_block = load_all_memory(user_dir=user_dir)
-    
-    # Get skill context (health, budget, tasks data)
-    skills_context = get_skills_prompt_context()
-    capabilities = get_skill_capabilities_prompt()
-    
-    # Personality presets
-    personality = config.get("personality", "professional")
-    personality_traits = {
-        "professional": "You are efficient, clear, and action-oriented. You communicate like a sharp executive assistant — concise, proactive, zero fluff. You get things done before being asked.",
-        "friendly": "You are warm, personable, and caring. You communicate like a trusted friend who also happens to be incredibly helpful. You use casual language, show genuine interest in their day, and celebrate their wins.",
-        "coach": "You are encouraging, motivating, and forward-thinking. You communicate like a personal coach — you push them toward their goals, celebrate progress, give honest feedback, and keep them accountable.",
-        "minimal": "You are extremely concise. You use the absolute minimum words needed. No emoji, no filler, no pleasantries unless asked. Just answers and actions. Think terse and efficient.",
-    }
-    personality_desc = personality_traits.get(personality, personality_traits["professional"])
+    cli = config.get("cli", "your AI")
 
-    # Custom identity prompt (for agents like Arianna, Brock)
-    identity_prompt = config.get("identity_prompt", "")
+    # Lock to this user on first contact
+    if not config.get("telegram_user_id"):
+        config["telegram_user_id"] = str(update.effective_user.id)
+        save_config(config)
 
-    prompt = f"""You are {bot_name} — {name}'s personal assistant. Not a chatbot. Not an app. You are their EMPLOYEE.
-
-PERSONALITY: {personality_desc}
-
-{identity_prompt}
-
-Think of yourself as a real assistant who works for {name}. You know their life, their family, their work, their health, their preferences. You USE that knowledge constantly. You don't wait to be asked — you anticipate needs, follow up on things, and get work done.
-
-How you behave:
-- SHORT replies. 1-3 sentences for casual chat. Like texting a coworker, not a customer service bot.
-- NEVER repeat what they said. NEVER ask "anything else?" — just handle it.
-- REFERENCE what you know about them naturally. If you know their spouse's name, USE it. If you know they take meds, ASK about it. This is what makes you irreplaceable.
-- When they tell you to do something, DO IT IMMEDIATELY. Don't ask "would you like me to...?" — an employee doesn't ask permission to do their job.
-- Remember EVERYTHING. Every detail they share is important. Names, dates, preferences, complaints, goals — all of it.
-
-{f"WHAT I KNOW ABOUT {name.upper()} (use this naturally in conversation):" if memory_block else ""}
-{memory_block}
-
-{skills_context}
-{capabilities}
-
-TOOLS: You have real tools you can use silently:
-- web_search: Search the internet. Use for ANY current info (weather, news, prices, scores, facts you're unsure about). ALWAYS search rather than guessing.
-- read_url: Read any webpage. When {name} sends a link, use this to read it and summarize.
-- run_code: Run Python code. Use for math, calculations, date math, unit conversions, data processing.
-- remember: Save important facts about {name} to long-term memory. Use when you learn something worth remembering.
-- read_file: Read files from {name}'s data folder.
-- create_file: Create .docx or .txt documents. Use when {name} asks you to write a resume, letter, report, or any document they can download. The file will be sent to them automatically.
-- send_email: Send an email via Gmail. Use when {name} asks you to email someone.
-- analyze_image: Analyze an image file. Use when {name} sends a photo or asks about an image.
-- schedule_task: Schedule a recurring automated task. "Every Monday check my portfolio" or "Every morning brief me on crypto news." These run automatically — Kiyomi does the work and sends the result. Use when {name} says "every [time] do [thing]" or "schedule [task]".
-- list_schedules: Show all active scheduled tasks (cron jobs) and webhooks. Use when {name} asks what's scheduled or what automations are running.
-- create_webhook: Create a webhook URL that external services can POST to. Kiyomi will process the payload and respond. Use when {name} asks to create a webhook or connect an external service.
-
-CRITICAL RULES:
-1. DO NOT ASK FOR CONFIRMATION — when {name} asks you to do something, DO IT. Don't say "Would you like me to..." or "Shall I..." — just do the thing. Action > asking.
-2. DO NOT RE-ASK for info you already have. If they told you their name, job, details — USE them. Don't ask again.
-3. USE TOOLS PROACTIVELY:
-   - Something current or uncertain? → web_search immediately. Never say "I don't have that info."
-   - They send a URL? → read_url immediately.
-   - Math/calculations needed? → run_code.
-   - They ask to write/create/draft ANY document? → create_file IMMEDIATELY. Make a real .docx file. Do NOT type the document in chat — that's useless on a phone. The file auto-delivers in Telegram.
-   - They say "yes" or agree to something? → DO IT NOW. Don't ask more questions you already know the answer to.
-   - They send a photo? → analyze_image.
-   - You learn something about them? → remember silently.
-4. KEEP RESPONSES SHORT. This is Telegram on a phone. 2-4 sentences max for casual chat. Only go longer when they ask for detailed info.
-5. When you create a file, tell them briefly what you made (1 sentence). The file appears automatically right after your message.
-"""
-    return prompt.strip()
-
-
-def _should_respond_in_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Check if the bot should respond to this group message.
-
-    In groups, only respond when:
-    - The bot is directly @mentioned
-    - The message is a reply to the bot's own message
-    """
-    chat = update.effective_chat
-    if not chat or chat.type in ("private",):
-        return True  # Always respond in private chats
-
-    # Group/supergroup — check if we're mentioned or replied to
-    message = update.message
-    if not message:
-        return False
-
-    # Check if replying to the bot
-    if message.reply_to_message and message.reply_to_message.from_user:
-        if message.reply_to_message.from_user.id == context.bot.id:
-            return True
-
-    # Check if @mentioned
-    if message.entities:
-        bot_username = context.bot.username
-        for entity in message.entities:
-            if entity.type == "mention":
-                mention_text = message.text[entity.offset:entity.offset + entity.length]
-                if bot_username and mention_text.lower() == f"@{bot_username.lower()}":
-                    return True
-
-    return False
-
-
-def _detect_cron_request(message: str):
-    """Detect if a message is requesting a scheduled/cron task.
-
-    Returns (task_prompt, schedule_str) or None.
-
-    Cron triggers: "every [time] [do] [task]" or "schedule [task] every [time]"
-    Must NOT match simple reminders like "remind me every morning to..."
-    """
-    import re
-    msg_lower = message.lower().strip()
-
-    # Skip if it's a reminder request (reminders handler will catch it)
-    reminder_triggers = ['remind me', "don't let me forget", 'dont let me forget', 'remember to', 'alert me']
-    if any(t in msg_lower for t in reminder_triggers):
-        return None
-
-    # Pattern 1: "Every [schedule], [task]" or "Every [schedule] [task]"
-    # e.g. "Every Monday at 9am, check my portfolio"
-    # e.g. "Every morning search for crypto news"
-    schedule_patterns = [
-        r"^(every\s+(?:morning|afternoon|evening|night|day|monday|tuesday|wednesday|thursday|friday|saturday|sunday)"
-        r"(?:\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?)[,\s]+(.+)",
-        r"^(every\s+\d+\s*(?:hours?|minutes?))[,\s]+(.+)",
-        r"^(daily(?:\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?)[,\s]+(.+)",
-    ]
-
-    for pattern in schedule_patterns:
-        match = re.match(pattern, msg_lower, re.IGNORECASE)
-        if match:
-            schedule_str = match.group(1).strip()
-            task_part = message[match.start(2):match.end(2)].strip()
-            # Clean up task: remove leading "do", "run", "check"... keep it natural
-            task_clean = task_part.strip(' ,.')
-            if task_clean:
-                return (task_clean, schedule_str)
-
-    # Pattern 2: "Schedule a task every [schedule] to [task]"
-    schedule_match = re.match(
-        r"schedule\s+(?:a\s+)?(?:task\s+)?(every\s+\S+(?:\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?)\s+(?:to\s+)?(.+)",
-        msg_lower, re.IGNORECASE,
+    await update.message.reply_text(
+        f"Hey {name}! I'm Kiyomi, your AI assistant powered by {cli.title()}.\n\n"
+        f"Just send me a message and I'll respond. Send photos and I'll analyze them.\n\n"
+        f"Tips:\n"
+        f"- /reset — Start a fresh conversation\n"
+        f"- /cli — Switch AI provider\n"
+        f"- /identity — View/edit your assistant's personality\n"
+        f"- /update — Check for Kiyomi updates"
     )
-    if schedule_match:
-        schedule_str = schedule_match.group(1).strip()
-        task_part = message[schedule_match.start(2):schedule_match.end(2)].strip()
-        return (task_part.strip(' ,.'), schedule_str)
-
-    return None
 
 
-def _detect_webhook_request(message: str):
-    """Detect if a message is requesting webhook creation.
+async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Reset conversation session."""
+    chat_id = str(update.effective_chat.id)
+    if chat_id in sessions:
+        del sessions[chat_id]
+        _save_sessions(sessions)
+    await update.message.reply_text("Fresh start! Previous conversation context cleared.")
 
-    Returns (name, action_template) or None.
-    """
-    import re
-    msg_lower = message.lower().strip()
 
-    # "Create a webhook for [name/purpose]"
-    webhook_patterns = [
-        r"(?:create|set\s*up|make|add)\s+(?:a\s+)?webhook\s+(?:for|when|that)\s+(.+)",
-        r"(?:create|set\s*up|make|add)\s+(?:a\s+)?webhook\s+(?:called|named)\s+[\"']?([^\"']+)[\"']?\s+(?:that|to|for)\s+(.+)",
-    ]
+async def cmd_cli(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Switch CLI provider."""
+    config = load_config()
+    current = config.get("cli", "none")
+    available = detect_available_clis()
 
-    match = re.match(webhook_patterns[0], msg_lower, re.IGNORECASE)
-    if match:
-        purpose = message[match.start(1):match.end(1)].strip(' ,.')
-        # Generate a name and action template from the purpose
-        name = purpose[:50]
-        action_template = f"A webhook event just happened ({purpose}). Here's the payload: {{payload}}. Summarize what happened."
-        return (name, action_template)
+    lines = [f"Current CLI: **{current}**\n", "Available CLIs:"]
+    for name, path in available.items():
+        marker = " (active)" if name == current else ""
+        lines.append(f"  - {name}{marker}")
 
-    return None
+    if not available:
+        lines.append("  None found! Install Claude, Codex, or Gemini CLI.")
+
+    lines.append(f"\nTo switch, send: /cli <name>")
+    lines.append(f"Example: /cli gemini")
+
+    # Check if user provided an argument
+    if context.args:
+        new_cli = context.args[0].lower().strip()
+        if new_cli in available:
+            config["cli"] = new_cli
+            save_config(config)
+            sync_identity_file(new_cli, WORKSPACE)
+            # Clear session since different CLI
+            chat_id = str(update.effective_chat.id)
+            if chat_id in sessions:
+                del sessions[chat_id]
+                _save_sessions(sessions)
+            await update.message.reply_text(f"Switched to **{new_cli}** CLI! Session reset.")
+            return
+        elif new_cli in ("claude", "codex", "gemini"):
+            await update.message.reply_text(f"{new_cli} CLI is not installed on this machine.")
+            return
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_identity(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show or describe the current identity file."""
+    if IDENTITY_FILE.exists():
+        content = IDENTITY_FILE.read_text(encoding="utf-8", errors="replace")
+        # Truncate for Telegram
+        if len(content) > 3500:
+            content = content[:3500] + "\n\n... (truncated)"
+        await update.message.reply_text(
+            f"**Your assistant's identity:**\n\n```\n{content}\n```\n\n"
+            f"To change it, just tell me in plain English what you want me to do differently.",
+            parse_mode="Markdown"
+        )
+    else:
+        await update.message.reply_text("No identity file found. Send me a message to get started!")
+
+
+async def cmd_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Check for updates."""
+    await update.message.reply_text("Checking for updates...")
+    try:
+        has_update, info = check_for_updates()
+        if has_update:
+            await update.message.reply_text(
+                f"Update available: v{info.get('version', '?')}\n"
+                f"{info.get('notes', '')}\n\n"
+                f"Downloading and installing..."
+            )
+            perform_update(info)
+            await update.message.reply_text("Update installed! Restarting...")
+            restart_bot()
+        else:
+            await update.message.reply_text("You're on the latest version!")
+    except Exception as e:
+        await update.message.reply_text(f"Update check failed: {e}")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle incoming messages — the core loop."""
-    if not update.message or not update.message.text:
+    """Handle all text and media messages — the core loop."""
+    config = load_config()
+    chat_id = str(update.effective_chat.id)
+
+    # Auth check: only allow the configured user (or anyone if not set)
+    allowed_user = config.get("telegram_user_id", "")
+    if allowed_user and str(update.effective_user.id) != allowed_user:
+        await update.message.reply_text("Sorry, this bot is private.")
         return
 
-    # In groups, only respond when @mentioned or replied to
-    if not _should_respond_in_group(update, context):
+    # Get CLI adapter
+    cli_name = config.get("cli", "")
+    if not cli_name:
+        await update.message.reply_text(
+            "No AI CLI configured. Open Kiyomi settings to set up your AI provider."
+        )
         return
-
-    # Keep-alive typing indicator (refreshes every 4 seconds so user sees "typing...")
-    chat_id = update.effective_chat.id
-    _typing_active = True
-
-    async def _keep_typing():
-        while _typing_active:
-            try:
-                await asyncio.sleep(4)
-                if _typing_active:
-                    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-            except Exception:
-                pass
-
-    typing_task = asyncio.create_task(_keep_typing())
 
     try:
-        await _handle_message_inner(update, context)
-    except Exception as e:
-        logger.error(f"Message handler crashed: {type(e).__name__}: {e}", exc_info=True)
-        try:
-            await update.message.reply_text(f"Sorry, something went wrong! Error: {str(e)[:200]}")
-        except Exception:
-            pass
-    finally:
-        _typing_active = False
-        typing_task.cancel()
+        adapter = get_adapter(cli_name)
+    except (ValueError, FileNotFoundError) as e:
+        await update.message.reply_text(f"CLI error: {e}")
+        return
 
+    # Build the message text
+    message_text = update.message.text or update.message.caption or ""
 
-async def _handle_message_inner(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Inner message handler — all the real logic."""
-    config = load_config()
-    user_msg = update.message.text.strip()
-    
-    # Get user's Telegram ID and first name
-    telegram_id = str(update.effective_user.id)
-    first_name = update.effective_user.first_name or "User"
-    
-    # Get or create user and their memory directory
-    user_info = user_manager.get_or_create_user(telegram_id, first_name)
-    user_memory_dir = user_manager.get_user_memory_dir(telegram_id)
-    
-    # Store Telegram user ID on first message
-    if not config.get("telegram_user_id"):
-        config["telegram_user_id"] = telegram_id
-        save_config(config)
-    
+    # Handle photos
+    image_path = None
+    if update.message.photo:
+        photo = update.message.photo[-1]  # Highest resolution
+        photo_file = await photo.get_file()
+        tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False, dir=str(WORKSPACE))
+        await photo_file.download_to_drive(tmp.name)
+        image_path = tmp.name
+        if not message_text:
+            message_text = "Describe this image in detail."
+
+    # Handle documents (PDFs, etc.)
+    if update.message.document:
+        doc = update.message.document
+        doc_file = await doc.get_file()
+        ext = Path(doc.file_name).suffix if doc.file_name else ".bin"
+        tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False, dir=str(WORKSPACE))
+        await doc_file.download_to_drive(tmp.name)
+        if not message_text:
+            message_text = f"Analyze this file: {tmp.name}"
+        else:
+            message_text = f"{message_text}\n\nFile saved at: {tmp.name}"
+
+    # Handle voice messages
+    if update.message.voice:
+        voice = update.message.voice
+        voice_file = await voice.get_file()
+        tmp = tempfile.NamedTemporaryFile(suffix=".ogg", delete=False, dir=str(WORKSPACE))
+        await voice_file.download_to_drive(tmp.name)
+        message_text = f"Transcribe and respond to this voice message: {tmp.name}"
+
+    if not message_text:
+        return
+
     # Show typing indicator
     await update.message.chat.send_action(ChatAction.TYPING)
 
-    # --- Natural memory extraction (no onboarding gate) ---
-    # Extract personal facts from every message silently
-    facts = extract_facts_from_message(user_msg, user_dir=user_memory_dir)
-    for fact, category in facts:
-        save_fact(fact, category, user_dir=user_memory_dir)
-    
-    # --- Mood / pattern detection ---
-    msg_lower = user_msg.lower()
-    _MOOD_INDICATORS = {
-        "stressed": ["stressed", "overwhelmed", "too much", "can't handle", "exhausted", "burned out"],
-        "happy": ["great day", "excited", "amazing", "wonderful", "celebration", "promoted", "won"],
-        "sad": ["sad", "depressed", "lonely", "miss", "lost", "grief", "crying"],
-        "anxious": ["worried", "anxious", "nervous", "scared", "can't sleep"],
-    }
-    for mood, keywords in _MOOD_INDICATORS.items():
-        matched_keyword = next((kw for kw in keywords if kw in msg_lower), None)
-        if matched_keyword:
-            brief_context = user_msg[:80].replace("\n", " ")
-            save_fact(f"Mood: {mood} - {brief_context}", "other", user_dir=user_memory_dir)
-            break  # Only save one mood per message
-    
-    # --- Update detection (early, before AI routing) ---
-    if is_update_request(user_msg):
-        await update.message.chat.send_action(ChatAction.TYPING)
-        logger.info(f"Update request detected: {user_msg}")
-        
+    # Sync identity file before calling CLI
+    sync_identity_file(cli_name, WORKSPACE)
+
+    # Build and run CLI command
+    session_id = sessions.get(chat_id)
+    model = config.get("model") or None
+    timeout = config.get("cli_timeout", 120)
+
+    try:
+        cmd = adapter.build_command(
+            message=message_text,
+            session_id=session_id,
+            model=model,
+            image_path=image_path,
+        )
+    except FileNotFoundError as e:
+        await update.message.reply_text(f"CLI not found: {e}")
+        return
+
+    logger.info(f"[{cli_name}] Running: {' '.join(cmd[:4])}...")
+    before = time.time()
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(WORKSPACE),
+            env=get_env(),
+        )
+        elapsed = time.time() - before
+        logger.info(f"[{cli_name}] Completed in {elapsed:.1f}s (rc={result.returncode})")
+
+        response_text, new_session_id = adapter.parse_response(
+            result.stdout, result.stderr, result.returncode
+        )
+
+        # Update session
+        if new_session_id:
+            sessions[chat_id] = new_session_id
+            _save_sessions(sessions)
+
+    except subprocess.TimeoutExpired:
+        response_text = f"The AI took too long to respond (>{timeout}s timeout). Try a shorter message or /reset."
+    except Exception as e:
+        logger.error(f"CLI error: {e}", exc_info=True)
+        response_text = f"Error calling {cli_name}: {e}"
+
+    # Clean up temp image
+    if image_path:
         try:
-            # Perform the update
-            update_result = await perform_update()
-            
-            if update_result['success']:
-                # Send success message to user
-                response = f"🎉 {update_result['message']}\n\n"
-                if update_result['changes']:
-                    response += f"**What's new:**\n{update_result['changes']}\n\n"
-                response += "Restarting in 3 seconds... 🔄"
-                
-                await update.message.reply_text(response, parse_mode="Markdown")
-                
-                # Log the update
-                log_conversation(user_msg, f"[Updated Kiyomi: {update_result['message']}]", user_dir=user_memory_dir)
-                
-                # Wait a moment, then restart
-                await asyncio.sleep(3)
-                await restart_bot()
-                
-            else:
-                # Update failed
-                error_response = f"❌ Update failed: {update_result['message']}"
-                await update.message.reply_text(error_response)
-                log_conversation(user_msg, f"[Update failed: {update_result['message']}]", user_dir=user_memory_dir)
-                
-        except Exception as e:
-            logger.error(f"Update process failed: {e}")
-            await update.message.reply_text(
-                f"❌ Sorry, the update failed with an error: {str(e)[:200]}...\n\n"
-                "Please try again later or contact support if the problem persists."
-            )
-        
-        return  # Don't process the message further
+            os.unlink(image_path)
+        except OSError:
+            pass
 
-    # Check for cron task (scheduled automation — different from reminders)
-    cron_result = _detect_cron_request(user_msg)
-    if cron_result:
-        task_prompt, schedule_str = cron_result
-        cron_entry = add_cron(task_prompt, schedule_str)
-        if cron_entry:
-            schedule_human = cron_entry.get("schedule_human", schedule_str)
-            next_run = cron_entry.get("next_run", "soon")
-            try:
-                from datetime import datetime as _dt
-                nr = _dt.fromisoformat(next_run)
-                next_str = nr.strftime("%b %d at %I:%M %p")
-            except (ValueError, TypeError):
-                next_str = next_run
-            await update.message.reply_text(
-                f"Scheduled! 🔄\n\n"
-                f"*Task:* {task_prompt[:200]}\n"
-                f"*Schedule:* {schedule_human}\n"
-                f"*Next run:* {next_str}\n\n"
-                f"I'll run this automatically and send you the results. "
-                f"Use /cron to manage your scheduled tasks.",
-                parse_mode="Markdown"
-            )
-            log_conversation(user_msg, f"[Cron scheduled: {task_prompt[:100]} — {schedule_human}]", user_dir=user_memory_dir)
-            return
+    # Send response (split if too long for Telegram)
+    if not response_text:
+        response_text = "(No response from AI)"
 
-    # Check for webhook creation request
-    webhook_result = _detect_webhook_request(user_msg)
-    if webhook_result:
-        name, action_template = webhook_result
-        hook = create_webhook(name, action_template)
-        # Use actual IP from agent registry, fallback to localhost
-        hook_url = f"http://127.0.0.1:8765/api/webhook/{hook['id']}"
-        await update.message.reply_text(
-            f"Webhook created! 🔔\n\n"
-            f"*Name:* {name}\n"
-            f"*URL:* `{hook_url}`\n\n"
-            f"POST any JSON payload to that URL and I'll process it.\n"
-            f"Use /webhooks to manage your webhooks.",
-            parse_mode="Markdown"
-        )
-        log_conversation(user_msg, f"[Webhook created: {name}]", user_dir=user_memory_dir)
-        return
-
-    # Check for reminder
-    reminder_info = parse_reminder_from_message(user_msg)
-    if reminder_info:
-        reminder = add_reminder(
-            reminder_info["text"],
-            reminder_info["time"],
-            reminder_info["recurring"]
-        )
-        freq = "every day" if reminder["recurring"] else "once"
-        await update.message.reply_text(
-            f"Got it! I'll remind you: \"{reminder_info['text']}\" "
-            f"({freq} at {reminder_info['time']}) ✅"
-        )
-        log_conversation(user_msg, f"[Reminder set: {reminder_info['text']}]", user_dir=user_memory_dir)
-        return
-
-    # Check for image generation request
-    if is_image_request(user_msg):
-        logger.info(f"Image generation request detected: {user_msg[:100]}...")
-        await update.message.chat.send_action(ChatAction.UPLOAD_PHOTO)
-        
+    # Telegram max message length is 4096
+    for chunk in _split_message(response_text):
         try:
-            # Generate image
-            result = await generate_image(user_msg, provider="auto")
-            
-            # Check if result is a file path or error message
-            if result and Path(result).exists():
-                # Send as photo
-                with open(result, 'rb') as photo_file:
-                    await update.message.reply_photo(
-                        photo=photo_file,
-                        caption=f"Here's your image! 🎨"
-                    )
-                
-                # Log the interaction
-                log_conversation(user_msg, f"[Generated image: {Path(result).name}]", user_dir=user_memory_dir)
-                
-                # Clean up temp file after sending
-                try:
-                    Path(result).unlink()
-                except Exception as cleanup_error:
-                    logger.warning(f"Could not clean up temp image file: {cleanup_error}")
-                
-                return
-            else:
-                # Generation failed, send error message
-                await update.message.reply_text(
-                    f"I had trouble generating that image. {result[:500]}..."
-                )
-                log_conversation(user_msg, f"[Image generation failed: {result[:200]}...]", user_dir=user_memory_dir)
-                return
-                
-        except Exception as e:
-            logger.error(f"Image generation error: {e}")
-            await update.message.reply_text(
-                "I had trouble generating that image. Please try again with a different description! 🎨"
-            )
-            return
-    
-    # Check for app building request
-    try:
-        from app_builder import is_app_request, build_app
-        
-        if is_app_request(user_msg):
-            logger.info(f"App building request detected: {user_msg[:100]}...")
-            await update.message.chat.send_action(ChatAction.TYPING)
-            
-            # Send "building your app" message
-            building_msg = await update.message.reply_text("Building your app... 🔧✨")
-            
-            try:
-                # Generate the app
-                result = await build_app(user_msg, config)
-                
-                # Delete the "building" message
-                try:
-                    await building_msg.delete()
-                except Exception:
-                    pass
-                
-                if result["success"]:
-                    # Send success message with app details
-                    response = (
-                        f"✅ **{result['app_name']}** is ready!\n\n"
-                        f"📱 {result['description']}\n\n"
-                        f"💾 Saved to: `{result['file_path']}`\n\n"
-                        f"🌐 I've opened it in your browser. It's a single HTML file that works offline - "
-                        f"you can double-click it anytime to open it again!"
-                    )
-                    
-                    await update.message.reply_text(response, parse_mode="Markdown")
-                    
-                    # Also send the HTML file as a document so they can download it
-                    try:
-                        with open(result["file_path"], 'rb') as app_file:
-                            await update.message.reply_document(
-                                document=app_file,
-                                filename=Path(result["file_path"]).name,
-                                caption=f"📄 Here's your {result['app_name']} as a file!"
-                            )
-                    except Exception as send_error:
-                        logger.warning(f"Could not send app file: {send_error}")
-                    
-                    # Log the interaction
-                    log_conversation(
-                        user_msg, 
-                        f"[Generated app: {result['app_name']} - {result['file_path']}]", 
-                        user_dir=user_memory_dir
-                    )
-                    
-                    return
-                else:
-                    # App generation failed
-                    error_response = (
-                        f"❌ I had trouble building that app.\n\n"
-                        f"**Error:** {result['error'][:300]}...\n\n"
-                        f"Try rephrasing your request or asking for a simpler app!"
-                    )
-                    await update.message.reply_text(error_response, parse_mode="Markdown")
-                    log_conversation(user_msg, f"[App generation failed: {result['error'][:200]}...]", user_dir=user_memory_dir)
-                    return
-                    
-            except Exception as e:
-                # Delete the "building" message
-                try:
-                    await building_msg.delete()
-                except Exception:
-                    pass
-                
-                logger.error(f"App building error: {e}")
-                await update.message.reply_text(
-                    f"❌ Sorry, I had trouble building that app.\n\n"
-                    f"**Error:** {str(e)[:200]}...\n\n"
-                    f"Please try again with a different description! 🔧"
-                )
-                return
-    
-    except ImportError:
-        logger.warning("App builder module not available")
-        # Continue with normal processing
-    
-    # Check for computer control request
-    if HAS_COMPUTER_CONTROL and config.get("computer_control_enabled", True) and is_computer_action(user_msg):
-        logger.info(f"Computer control request detected: {user_msg[:100]}...")
-        
-        # Get the appropriate provider and API key for computer control
-        # Agent TARS requires a raw API key — CLI providers don't have one.
-        computer_provider = config.get("provider", "anthropic")
-        computer_api_key = get_api_key(config)
-        computer_timeout = config.get("agent_tars_timeout", 120)
-
-        if not computer_api_key:
-            # Try to find ANY available API key (CLI users may still have one)
-            for fallback_key in ["anthropic_key", "gemini_key", "openai_key"]:
-                if config.get(fallback_key):
-                    computer_api_key = config[fallback_key]
-                    computer_provider = fallback_key.replace("_key", "")
-                    break
-
-        if not computer_api_key:
-            await update.message.reply_text(
-                "Computer control requires an API key (it uses Agent TARS under the hood).\n\n"
-                "You're using a CLI subscription which doesn't provide an API key. "
-                "To use computer control, add an API key in Kiyomi settings."
-            )
-            return
-        
-        # Optional confirmation step
-        if config.get("computer_control_confirm", True):
-            await update.message.reply_text(
-                f"🤖 I'm about to control your computer to: **{user_msg}**\n\n"
-                f"This will be performed by Agent TARS using {computer_provider}. "
-                f"This may take 30-120 seconds.\n\n"
-                f"Starting computer control...",
-                parse_mode="Markdown"
-            )
-        
-        # Show typing indicator for computer actions
-        await update.message.chat.send_action(ChatAction.TYPING)
-        
-        try:
-            # Execute the computer action
-            result = await execute_computer_action(
-                message=user_msg,
-                provider=computer_provider,
-                api_key=computer_api_key,
-                timeout=computer_timeout
-            )
-            
-            # Send the result
-            await update.message.reply_text(result)
-            
-            # Log the interaction
-            log_conversation(user_msg, f"[Computer Control] {result[:200]}...", user_dir=user_memory_dir)
-            
-            return
-            
-        except Exception as e:
-            logger.error(f"Computer control error: {e}")
-            await update.message.reply_text(
-                f"❌ Computer control failed: {str(e)[:200]}...\n\n"
-                f"Please try again or contact support if the problem persists."
-            )
-            return
-    
-    # Strip /opus and /sonnet triggers from the message before sending to AI
-    import re
-    ai_user_msg = user_msg
-    for trigger in ['/opus', '/sonnet']:
-        ai_user_msg = re.sub(r'(?<!\S)' + re.escape(trigger) + r'(?!\S)', '', ai_user_msg, flags=re.IGNORECASE).strip()
-
-    # Classify and route
-    task_type = classify_message(user_msg)
-    provider, model = pick_model(task_type, config)
-    api_key = ""
-    if not provider.endswith("-cli"):
-        api_key = config.get(f"{provider}_key", "")
-        if not api_key:
-            api_key = get_api_key(config)
-        if not api_key:
-            await update.message.reply_text(
-                "I'm not connected to an AI service yet! 😅\n\n"
-                "Open Kiyomi settings to connect your AI account."
-            )
-            return
-    
-    # Build system prompt with memory
-    system_prompt = build_system_prompt(config, user_dir=user_memory_dir)
-
-    # If the user sent URLs, pre-fetch content so it works with CLI providers too.
-    url_context = ""
-    urls_in_message = find_urls(user_msg)
-    try:
-        url_context = read_urls_in_message(user_msg)
-    except Exception as e:
-        logger.warning(f"URL prefetch failed: {e}")
-        url_context = ""
-    
-    # If a URL was sent but we couldn't fetch it, be explicit instead of guessing.
-    if urls_in_message and not url_context:
-        await update.message.reply_text(
-            "I couldn't access that link from here. "
-            "Please paste the relevant text or try a different URL."
-        )
-        return
-
-    # Snapshot files dir BEFORE AI call (to detect new files after)
-    files_dir = CONFIG_DIR / "files"
-    files_dir.mkdir(parents=True, exist_ok=True)
-    files_before = set(files_dir.iterdir()) if files_dir.exists() else set()
-
-    ai_message = ai_user_msg
-    if url_context:
-        ai_message = f"{ai_user_msg}\n\n[Content from links]\n{url_context}"
-    
-    # Chat with AI
-    response = await chat(
-        message=ai_message,
-        provider=provider,
-        model=model,
-        api_key=api_key,
-        system_prompt=system_prompt,
-        history=conversation_history[-20:],
-        cli_path=config.get("cli_path", ""),
-        cli_timeout=get_cli_timeout(config),
-    )
-    
-    # Update conversation history (store original message, not augmented)
-    conversation_history.append({"role": "user", "content": user_msg})
-    conversation_history.append({"role": "assistant", "content": response})
-    
-    # Keep history manageable and persist to disk
-    if len(conversation_history) > 40:
-        conversation_history[:] = conversation_history[-20:]
-    _save_conversation_history()
-
-    # Save to memory (silently)
-    log_conversation(user_msg, response, user_dir=user_memory_dir)
-    extract_and_remember(user_msg, response, user_dir=user_memory_dir)
-    
-    # Run skills post-message hook (detect & extract health, budget, tasks)
-    run_post_message_hook(user_msg, response)
-
-    # Voice reply check — respond with audio if appropriate
-    try:
-        from voice_reply import should_use_voice, generate_voice_reply
-        if should_use_voice(user_msg, config):
-            audio_path = await generate_voice_reply(response, config)
-            if audio_path:
-                with open(audio_path, "rb") as af:
-                    await update.message.reply_voice(voice=af)
-                # Still send text too (for readability)
-    except ImportError:
-        pass  # Voice module not available
-    except Exception as e:
-        logger.error(f"Voice reply error: {e}")
-    
-    # Send response
-    # Split long messages for Telegram (4096 char limit)
-    if len(response) > 4000:
-        chunks = [response[i:i+4000] for i in range(0, len(response), 4000)]
-        for chunk in chunks:
-            await update.message.reply_text(chunk)
-    else:
-        await update.message.reply_text(response)
-
-    # Send any NEW files created during this AI call
-    if files_dir.exists():
-        files_after = set(files_dir.iterdir())
-        new_files = files_after - files_before
-        for f in new_files:
-            if f.is_file():
-                try:
-                    with open(f, "rb") as fh:
-                        await update.message.reply_document(
-                            document=fh, filename=f.name
-                        )
-                    logger.info(f"Sent file: {f.name}")
-                except Exception as e:
-                    logger.error(f"Failed to send file {f.name}: {e}")
-
-
-async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle voice messages — transcribe and extract action items."""
-    await update.message.reply_chat_action(ChatAction.TYPING)
-
-    try:
-        # Use the new voice notes system
-        from voice_notes import handle_voice_message
-        response = await handle_voice_message(update, context)
-        await update.message.reply_text(response[:4000])
-    except Exception as e:
-        logger.error(f"Voice error: {e}")
-        await update.message.reply_text("Hmm, I couldn't catch that. Mind typing it out? 🎤")
-
-
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle photos — download and analyze with AI vision.
-    
-    Receipt detection: if the caption mentions 'receipt' or the user recently
-    asked to scan a receipt, route to the receipt scanner instead of generic
-    image analysis.
-    """
-    config = load_config()
-
-    # Get user's memory directory
-    telegram_id = str(update.effective_user.id)
-    first_name = update.effective_user.first_name or "User"
-    user_info = user_manager.get_or_create_user(telegram_id, first_name)
-    user_memory_dir = user_manager.get_user_memory_dir(telegram_id)
-
-    await update.message.reply_chat_action(ChatAction.TYPING)
-
-    try:
-        # Get highest res photo
-        photo = update.message.photo[-1]
-        photo_file = await context.bot.get_file(photo.file_id)
-
-        # Save to temp
-        photo_path = CONFIG_DIR / "temp" / f"photo_{photo.file_id}.jpg"
-        photo_path.parent.mkdir(parents=True, exist_ok=True)
-        await photo_file.download_to_drive(photo_path)
-
-        caption = update.message.caption or ""
-
-        # --- Receipt detection (check BEFORE generic analysis) ---
-        try:
-            from receipt_scanner import looks_like_receipt_request, scan_receipt, process_receipt
-
-            # Gather recent user messages for context
-            recent_user_msgs = [
-                m["content"] for m in conversation_history[-6:]
-                if m.get("role") == "user"
-            ]
-
-            if looks_like_receipt_request(caption, recent_user_msgs):
-                # Route to receipt scanner
-                logger.info("Receipt detected — routing to receipt scanner")
-                scan_result = scan_receipt(str(photo_path), config)
-                response = process_receipt(scan_result)
-
-                await update.message.reply_text(response[:4000], parse_mode="Markdown")
-
-                # Log to conversation history
-                log_conversation(
-                    f"[Photo: receipt scan] {caption}".strip(),
-                    response,
-                    user_dir=user_memory_dir
-                )
-
-                # Cleanup
-                photo_path.unlink(missing_ok=True)
-                return
-        except ImportError:
-            logger.warning("receipt_scanner module not available")
-        except Exception as e:
-            logger.error(f"Receipt scan error: {e}")
-            # Fall through to generic analysis
-
-        # --- Generic image analysis ---
-        if not caption:
-            caption = "What's in this image? Describe it and help me with whatever I might need."
-
-        # Use analyze_image tool
-        from engine.tools import analyze_image
-
-        result = analyze_image(str(photo_path), caption)
-
-        await update.message.reply_text(result[:4000])
-
-        # Cleanup
-        photo_path.unlink(missing_ok=True)
-    except Exception as e:
-        logger.error(f"Photo error: {e}")
-        await update.message.reply_text("Sorry, I couldn't process that image. Try sending it again? 📷")
-
-
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle document uploads — read and process."""
-    config = load_config()
-
-    # Get user's memory directory
-    telegram_id = str(update.effective_user.id)
-    first_name = update.effective_user.first_name or "User"
-    user_info = user_manager.get_or_create_user(telegram_id, first_name)
-    user_memory_dir = user_manager.get_user_memory_dir(telegram_id)
-
-    await update.message.reply_chat_action(ChatAction.TYPING)
-
-    doc = update.message.document
-    if not doc:
-        return
-
-    filename = doc.file_name or "unknown"
-    mime = doc.mime_type or ""
-
-    try:
-        file = await context.bot.get_file(doc.file_id)
-        file_path = CONFIG_DIR / "temp" / filename
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        await file.download_to_drive(file_path)
-
-        # Determine type and extract text
-        suffix = file_path.suffix.lower()
-        content = ""
-
-        if suffix == ".pdf":
-            try:
-                import subprocess
-
-                result = subprocess.run(
-                    ["pdftotext", str(file_path), "-"],
-                    capture_output=True, text=True, timeout=10,
-                )
-                if result.returncode == 0:
-                    content = result.stdout[:5000]
-                else:
-                    content = "[Could not extract PDF text — pdftotext not available]"
-            except Exception:
-                content = "[Could not extract PDF text]"
-
-        elif suffix == ".docx":
-            try:
-                from docx import Document as DocxDocument
-
-                doc_obj = DocxDocument(str(file_path))
-                content = "\n".join(p.text for p in doc_obj.paragraphs)[:5000]
-            except Exception:
-                content = "[Could not read .docx file]"
-
-        elif suffix in (".txt", ".md", ".csv", ".json"):
-            content = file_path.read_text(encoding="utf-8", errors="replace")[:5000]
-
-        elif suffix in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
-            from engine.tools import analyze_image
-
-            caption = update.message.caption or "What's in this image?"
-            result = analyze_image(str(file_path), caption)
-            await update.message.reply_text(result[:4000])
-            file_path.unlink(missing_ok=True)
-            return
-
-        else:
-            await update.message.reply_text(
-                f"I received {filename} but I'm not sure how to read that file type yet. "
-                f"I can handle .pdf, .docx, .txt, .md, .csv, and images! 📁"
-            )
-            file_path.unlink(missing_ok=True)
-            return
-
-        if content:
-            # SAVE document to memory so AI can reference it later
-            docs_dir = user_memory_dir / "documents"
-            docs_dir.mkdir(parents=True, exist_ok=True)
-            safe_name = filename.rsplit(".", 1)[0][:50]  # strip extension, limit length
-            doc_md = docs_dir / f"{safe_name}.md"
-            doc_md.write_text(
-                f"# {filename}\n"
-                f"*Received: {time.strftime('%Y-%m-%d %H:%M')}*\n\n"
-                f"{content}\n"
-            )
-            logger.info(f"Saved document to memory: {doc_md}")
-
-            # Pass to AI for analysis
-            from router import classify_message, pick_model
-
-            system_prompt = build_system_prompt(config, user_dir=user_memory_dir)
-            task_type = classify_message(f"analyze file: {filename}")
-            provider, model = pick_model(task_type, config)
-            api_key = config.get(f"{provider}_key", "") or get_api_key(config)
-            prompt = (
-                f"The user sent a file called '{filename}'. Here's the content:\n\n"
-                f"{content}\n\n"
-                f"I've saved this to memory so I can reference it anytime. "
-                f"Summarize this file and ask how you can help with it."
-            )
-            response = await chat(
-                message=prompt,
-                provider=provider,
-                model=model,
-                api_key=api_key,
-                system_prompt=system_prompt,
-                cli_path=config.get("cli_path", ""),
-                cli_timeout=get_cli_timeout(config),
-            )
-            await update.message.reply_text(response[:4000])
-
-        file_path.unlink(missing_ok=True)
-    except Exception as e:
-        logger.error(f"Document error: {e}")
-        await update.message.reply_text(
-            f"Sorry, I had trouble reading {filename}. Try a different format? 📁"
-        )
-
-
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /start command — first contact."""
-    config = load_config()
-    name = config.get("name", "")
-    bot_name = get_bot_name(config)
-    
-    if name:
-        await update.message.reply_text(
-            f"Hey {name}! 🌸 I'm here and ready to help.\n\n"
-            f"Just message me anything — I'm your personal assistant!"
-        )
-    else:
-        await update.message.reply_text(
-            f"Hi there! 🌸 I'm {bot_name}, your personal AI assistant.\n\n"
-            "What's your name? I'd love to get to know you!"
-        )
-        context.user_data["awaiting_name"] = True
-
-
-async def cmd_gettoknow(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Restart the Get to Know You flow."""
-    config = load_config()
-    name = config.get("name", "there")
-    intro = start_onboarding(name)
-    await update.message.reply_text(intro)
-
-
-async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /help command — show what Kiyomi can do."""
-    config = load_config()
-    name = config.get("name", "there")
-    await update.message.reply_text(
-        f"I'm your personal assistant, {name}. Here's what I do:\n\n"
-        "🧠 **I Remember Everything** — Tell me once, I know it forever\n"
-        "📄 **I Create Documents** — Resumes, letters, reports → delivered as files\n"
-        "⏰ **I Remind You** — Meds, meetings, deadlines — I never forget\n"
-        "🌅 **I Check In** — Morning briefs with weather, reminders, health\n"
-        "💊 **I Track Health** — Meds, vitals, symptoms, appointments\n"
-        "💰 **I Track Money** — Spending and income, naturally\n"
-        "📋 **I Track Tasks** — To-dos caught from conversation\n"
-        "🔗 **I Read Links** — Send me any URL\n"
-        "🔍 **I Search** — Current info, weather, news, anything\n"
-        "🔧 **I Build Apps** — Complete web applications from your descriptions\n\n"
-        "**Just talk to me like a real person.** I pick up on:\n"
-        "• \"My wife Sarah has a birthday March 15\"\n"
-        "• \"Remind me to file the Johnson brief by Friday\"\n"
-        "• \"Draft a demand letter for the Smith case\"\n"
-        "• \"I took my blood pressure, it was 130/80\"\n"
-        "• \"Build me a client intake form\"\n"
-        "• \"Create a to-do list app\"\n\n"
-        "🧾 **I Scan Receipts** — Send a photo with the caption \"receipt\":\n"
-        "• I'll read every item, total, tax, and payment method\n"
-        "• Auto-categorize and add to your budget tracker\n"
-        "• Keep a searchable history of all your receipts\n\n"
-        "🏦 **I Track Real Finances** — Connect your bank and ask:\n"
-        "• \"How much did I spend on food this week?\"\n"
-        "• \"What's my bank balance?\"\n"
-        "• \"Am I on budget this month?\"\n\n"
-        "🔧 **I Build Custom Apps** — Say what you need, I'll create it:\n"
-        "• \"Build me a client intake form for my law firm\"\n"
-        "• \"Create a to-do list app with priorities\"\n"
-        "• \"Make me an expense tracker\"\n"
-        "• \"Build a calculator for my business\"\n"
-        "• Single HTML file, works offline, no dependencies!\n\n"
-        "🔄 **I Run Scheduled Tasks** — Automated AI tasks on a schedule:\n"
-        "• \"Every morning check bitcoin price\"\n"
-        "• \"Every Monday summarize my portfolio\"\n"
-        "• \"Every Friday write a weekly recap\"\n\n"
-        "🔔 **I Accept Webhooks** — External services can trigger me:\n"
-        "• GitHub pushes, Stripe payments, build alerts\n"
-        "• \"Create a webhook for when my builds finish\"\n\n"
-        "**Commands:**\n"
-        "/memory — See everything I remember about you\n"
-        "/health — Your health summary\n"
-        "/budget — Your spending summary\n"
-        "/tasks — Your task list\n"
-        "/reminders — Your active reminders\n"
-        "/cron — Your scheduled tasks\n"
-        "/webhooks — Your active webhooks\n"
-        "/receipts — Recent scanned receipts\n"
-        "/connect — Connect your bank account\n"
-        "/profile — Your personal profile card 🪪\n"
-        "/profile full — Full profile as a document\n"
-        "/profile doctor — Health card for your doctor\n"
-        "/export — Export your profile\n"
-        "/lookup [name] — Search memory for a person\n"
-        "/apps — See your built applications\n"
-        "/help — Show this message\n"
-        "/forget — Clear my memory\n\n"
-        "The more we talk, the more useful I become. 💛",
-        parse_mode="Markdown"
-    )
-
-
-async def cmd_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /reminders command."""
-    reminders = list_active_reminders()
-    if not reminders:
-        await update.message.reply_text("No active reminders! Tell me to remind you about something 😊")
-        return
-    
-    text = "📋 Your reminders:\n\n"
-    for r in reminders:
-        freq = "🔁" if r.get("recurring") else "⏰"
-        text += f"{freq} {r['text']} — {r['time']}\n"
-    
-    await update.message.reply_text(text)
-
-
-async def cmd_health(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show health tracking summary."""
-    try:
-        from skills.health import HealthSkill
-        skill = HealthSkill()
-        ctx = skill.get_prompt_context()
-        if ctx and ctx.strip():
-            await update.message.reply_text(f"💊 Your Health Summary\n\n{ctx}")
-        else:
-            await update.message.reply_text(
-                "No health data tracked yet! 💊\n\n"
-                "Just mention things naturally:\n"
-                "• \"I took my blood pressure, it was 130/80\"\n"
-                "• \"Took my meds this morning\"\n"
-                "• \"I walked 5000 steps today\""
-            )
-    except ImportError:
-        await update.message.reply_text("Health tracking is being set up! 🔧")
-
-
-async def cmd_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show budget tracking summary."""
-    try:
-        from skills.budget import BudgetSkill
-        skill = BudgetSkill()
-        ctx = skill.get_prompt_context()
-        if ctx and ctx.strip():
-            await update.message.reply_text(f"💰 Your Budget Summary\n\n{ctx}")
-        else:
-            await update.message.reply_text(
-                "No spending tracked yet! 💰\n\n"
-                "Just mention expenses naturally:\n"
-                "• \"Spent $45 at Kroger\"\n"
-                "• \"Paid $120 for electric bill\"\n"
-                "• \"Got paid $3000 today\""
-            )
-    except ImportError:
-        await update.message.reply_text("Budget tracking is being set up! 🔧")
-
-
-async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show task list."""
-    try:
-        from skills.tasks import TaskSkill
-        skill = TaskSkill()
-        ctx = skill.get_prompt_context()
-        if ctx and ctx.strip():
-            await update.message.reply_text(f"📋 Your Tasks\n\n{ctx}")
-        else:
-            await update.message.reply_text(
-                "No tasks tracked yet! 📋\n\n"
-                "Just mention things naturally:\n"
-                "• \"I need to call the doctor tomorrow\"\n"
-                "• \"Don't let me forget to pay rent\"\n"
-                "• \"I have to finish the report by Friday\""
-            )
-    except ImportError:
-        await update.message.reply_text("Task tracking is being set up! 🔧")
-
-
-async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show what Kiyomi remembers — organized by category."""
-    from engine.memory import CATEGORIES, MEMORY_DIR, get_memory_summary
-    
-    # Get user's memory directory
-    telegram_id = str(update.effective_user.id)
-    first_name = update.effective_user.first_name or "User"
-    user_info = user_manager.get_or_create_user(telegram_id, first_name)
-    user_memory_dir = user_manager.get_user_memory_dir(telegram_id)
-    
-    summary = get_memory_summary(user_dir=user_memory_dir)
-    config = load_config()
-    bot_name = get_bot_name(config)
-    
-    lines = [f"🧠 **What {bot_name} Remembers**\n"]
-    
-    total_facts = 0
-    for cat_key, (filename, display_name) in CATEGORIES.items():
-        info = summary.get(cat_key, {})
-        count = info.get("facts", 0)
-        total_facts += count
-        if count > 0:
-            # Read actual facts for display
-            filepath = user_memory_dir / filename
-            if filepath.exists():
-                content = filepath.read_text(encoding="utf-8", errors="replace")
-                fact_lines = [l.strip() for l in content.splitlines() if l.strip().startswith("- ")]
-                # Show up to 5 facts per category
-                display = fact_lines[-5:]
-                emoji_map = {
-                    "identity": "👤", "family": "👨‍👩‍👧‍👦", "work": "💼",
-                    "health": "💊", "preferences": "⭐", "goals": "🎯",
-                    "schedule": "📅", "other": "📝"
-                }
-                emoji = emoji_map.get(cat_key, "📌")
-                lines.append(f"\n{emoji} **{display_name}** ({count} facts)")
-                for fl in display:
-                    # Clean up timestamp for display
-                    clean = fl.replace("- ", "  • ", 1)
-                    lines.append(clean[:100])
-    
-    if total_facts == 0:
-        lines.append(f"\nI don't know much about you yet! Just talk to me naturally and I'll start remembering. 💛")
-    else:
-        lines.append(f"\n📊 **Total: {total_facts} facts remembered**")
-        lines.append(f"\nThe more we talk, the more I learn about you. Everything here helps me be a better assistant.")
-    
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
-
-
-async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /export command — send memory as .md and .docx files."""
-    import tempfile
-    from engine.tools import markdown_to_docx
-
-    config = load_config()
-    name = config.get("name", "there")
-
-    # Get user's memory directory
-    telegram_id = str(update.effective_user.id)
-    first_name = update.effective_user.first_name or "User"
-    user_info = user_manager.get_or_create_user(telegram_id, first_name)
-    user_memory_dir = user_manager.get_user_memory_dir(telegram_id)
-
-    await update.message.chat.send_action(ChatAction.TYPING)
-
-    try:
-        md_content = export_memory(user_dir=user_memory_dir)
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # Write markdown file
-            md_path = Path(tmpdir) / f"kiyomi_memory_{name}.md"
-            md_path.write_text(md_content, encoding="utf-8")
-
-            # Convert to docx
-            docx_path = Path(tmpdir) / f"kiyomi_memory_{name}.docx"
-            doc = markdown_to_docx(md_content, title=f"Everything I Know About {name}")
-            doc.save(str(docx_path))
-
-            await update.message.reply_text(f"Here's everything I know about you, {name}! 📋")
-
-            # Send both files
-            with open(md_path, "rb") as f:
-                await update.message.reply_document(document=f, filename=md_path.name)
-            with open(docx_path, "rb") as f:
-                await update.message.reply_document(document=f, filename=docx_path.name)
-
-    except Exception as e:
-        logger.error(f"Export error: {e}")
-        await update.message.reply_text("Sorry, I had trouble exporting your memory. Try again? 😅")
-
-
-async def cmd_lookup(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /lookup command — search memory for a person."""
-    config = load_config()
-    name_query = " ".join(context.args) if context.args else ""
-
-    if not name_query:
-        await update.message.reply_text(
-            "Who should I look up? Use: /lookup Mrs. Davis"
-        )
-        return
-
-    # Get user's memory directory
-    telegram_id = str(update.effective_user.id)
-    first_name = update.effective_user.first_name or "User"
-    user_info = user_manager.get_or_create_user(telegram_id, first_name)
-    user_memory_dir = user_manager.get_user_memory_dir(telegram_id)
-
-    await update.message.chat.send_action(ChatAction.TYPING)
-
-    result = lookup_person(name_query, user_dir=user_memory_dir)
-
-    # Split if too long for Telegram
-    if len(result) > 4000:
-        chunks = [result[i:i+4000] for i in range(0, len(result), 4000)]
-        for chunk in chunks:
             await update.message.reply_text(chunk, parse_mode="Markdown")
-    else:
-        await update.message.reply_text(result, parse_mode="Markdown")
+        except Exception:
+            # Markdown parse failed — send as plain text
+            await update.message.reply_text(chunk)
+
+    # Check for new files in workspace
+    new_files = _find_new_files(WORKSPACE, before)
+    for f in new_files[:5]:  # Max 5 files
+        try:
+            if f.stat().st_size < 10_000_000:  # <10MB
+                await update.message.reply_document(document=open(f, "rb"), filename=f.name)
+        except Exception as e:
+            logger.warning(f"Failed to send file {f.name}: {e}")
 
 
-async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /forget command — clear memory."""
-    await update.message.reply_text(
-        "Are you sure you want me to forget everything? "
-        "Send /confirmforget to proceed."
-    )
+def _split_message(text: str, max_len: int = 4000) -> list[str]:
+    """Split a message into chunks that fit Telegram's limit."""
+    if len(text) <= max_len:
+        return [text]
+    chunks = []
+    while text:
+        if len(text) <= max_len:
+            chunks.append(text)
+            break
+        # Try to split at a newline
+        split_at = text.rfind("\n", 0, max_len)
+        if split_at == -1:
+            split_at = max_len
+        chunks.append(text[:split_at])
+        text = text[split_at:].lstrip("\n")
+    return chunks
 
 
-async def cmd_confirmforget(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Actually clear memory."""
-    import shutil
-    
-    # Get user's memory directory
-    telegram_id = str(update.effective_user.id)
-    first_name = update.effective_user.first_name or "User"
-    user_info = user_manager.get_or_create_user(telegram_id, first_name)
-    user_memory_dir = user_manager.get_user_memory_dir(telegram_id)
-    
-    if user_memory_dir and user_memory_dir.exists():
-        shutil.rmtree(user_memory_dir)
-        user_memory_dir.mkdir(parents=True, exist_ok=True)
-    conversation_history.clear()
-    await update.message.reply_text("Memory cleared. Fresh start! 🌱")
+# --- App Builder ---
 
-
-async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /profile — generate the Know Me profile card."""
-    config = load_config()
-    await update.message.reply_chat_action(ChatAction.TYPING)
-    
-    try:
-        from profile_card import generate_compact_card, generate_profile_card, generate_doctor_card
-        
-        args = context.args
-        if args and args[0].lower() == "doctor":
-            card = generate_doctor_card(config)
-            await update.message.reply_text(card[:4000], parse_mode="Markdown")
-            return
-        
-        if args and args[0].lower() == "full":
-            card = generate_profile_card(config)
-            # Full profile might be long — save as file
-            profile_path = Path.home() / ".kiyomi" / "files" / "my_profile.md"
-            profile_path.parent.mkdir(parents=True, exist_ok=True)
-            profile_path.write_text(card)
-            await update.message.reply_document(
-                document=open(profile_path, "rb"),
-                filename="My_Kiyomi_Profile.md",
-                caption="Here's your complete profile! 🪪"
-            )
-            return
-        
-        # Default: compact card
-        card = generate_compact_card(config)
-        await update.message.reply_text(card[:4000], parse_mode="Markdown")
-    
-    except ImportError:
-        await update.message.reply_text("Profile card feature not available in this version.")
-    except Exception as e:
-        logger.error(f"Profile card error: {e}")
-        await update.message.reply_text("Hmm, had trouble generating your profile. Try again?")
-
-
-async def cmd_receipts(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show recent receipt scan history."""
-    await update.message.chat.send_action(ChatAction.TYPING)
-    try:
-        from receipt_scanner import get_receipt_history
-        days = 30
-        if context.args:
-            try:
-                days = int(context.args[0])
-            except ValueError:
-                pass
-        result = get_receipt_history(days)
-        await update.message.reply_text(result[:4000], parse_mode="Markdown")
-    except ImportError:
-        await update.message.reply_text("Receipt scanning is being set up! 🔧")
-    except Exception as e:
-        logger.error(f"Receipts command error: {e}")
-        await update.message.reply_text("Sorry, I had trouble loading receipt history. 😅")
-
-
-async def cmd_cron(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /cron — list active scheduled tasks."""
-    crons = list_crons()
-    if not crons:
-        await update.message.reply_text(
-            "No scheduled tasks running! 🔄\n\n"
-            "Try saying:\n"
-            "• \"Every morning check bitcoin price\"\n"
-            "• \"Every Monday at 9am summarize my portfolio\"\n"
-            "• \"Every Friday write a weekly recap\""
-        )
-        return
-
-    lines = ["🔄 **Scheduled Tasks**\n"]
-    for c in crons:
-        schedule = c.get("schedule_human", "?")
-        task = c.get("task", "?")
-        next_run = c.get("next_run", "?")
-        if next_run and next_run != "?":
-            try:
-                from datetime import datetime
-                nr = datetime.fromisoformat(next_run)
-                next_str = nr.strftime("%b %d, %I:%M %p")
-            except (ValueError, TypeError):
-                next_str = next_run
-        else:
-            next_str = "?"
-        lines.append(f"• *{schedule}*\n  {task[:100]}\n  Next: {next_str}\n  ID: `{c['id']}`\n")
-
-    lines.append("_To remove: /removecron <id>_")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
-
-
-async def cmd_removecron(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /removecron <id> — remove a scheduled task."""
-    if not context.args:
-        await update.message.reply_text("Usage: /removecron <task_id>\n\nUse /cron to see IDs.")
-        return
-
-    cron_id = context.args[0]
-    if remove_cron(cron_id):
-        await update.message.reply_text(f"Scheduled task removed. ✅")
-    else:
-        await update.message.reply_text(f"Task not found: `{cron_id}`", parse_mode="Markdown")
-
-
-async def cmd_webhooks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /webhooks — list active webhooks."""
-    hooks = list_webhooks()
-    if not hooks:
-        await update.message.reply_text(
-            "No webhooks configured! 🔔\n\n"
-            "Try saying:\n"
-            "• \"Create a webhook for GitHub pushes\"\n"
-            "• \"Set up a webhook for Stripe payments\"\n"
-            "• \"Make a webhook for build notifications\""
-        )
-        return
-
-    lines = ["🔔 **Webhooks**\n"]
-    for h in hooks:
-        name = h.get("name", "Unnamed")
-        hook_id = h.get("id", "?")
-        count = h.get("trigger_count", 0)
-        url = f"http://127.0.0.1:8765/api/webhook/{hook_id}"
-        lines.append(
-            f"• **{name}**\n"
-            f"  URL: `{url}`\n"
-            f"  Triggered: {count} time{'s' if count != 1 else ''}\n"
-            f"  ID: `{hook_id}`\n"
-        )
-
-    lines.append("_To remove: /removewebhook <id>_")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
-
-
-async def cmd_removewebhook(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /removewebhook <id> — remove a webhook."""
-    if not context.args:
-        await update.message.reply_text("Usage: /removewebhook <hook_id>\n\nUse /webhooks to see IDs.")
-        return
-
-    hook_id = context.args[0]
-    if delete_webhook(hook_id):
-        await update.message.reply_text(f"Webhook removed. ✅")
-    else:
-        await update.message.reply_text(f"Webhook not found: `{hook_id}`", parse_mode="Markdown")
-
-
-async def cmd_connect(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /connect — connect a bank account via Plaid."""
-    try:
-        from plaid_integration import is_bank_connected, get_connected_banks
-        
-        config = load_config()
-        plaid_cfg = config.get("plaid", {})
-        client_id = plaid_cfg.get("client_id", "")
-        secret = plaid_cfg.get("secret", "")
-        
-        if not client_id or not secret:
-            await update.message.reply_text(
-                "🏦 **Bank Connection**\n\n"
-                "Plaid isn't set up yet. To connect your bank:\n\n"
-                "1. Open Kiyomi Settings\n"
-                "2. Go to Integrations → Plaid\n"
-                "3. Add your Plaid API keys\n"
-                "4. Then run /connect again\n\n"
-                "Get free API keys at https://dashboard.plaid.com",
-                parse_mode="Markdown",
-            )
-            return
-        
-        if is_bank_connected():
-            banks = get_connected_banks()
-            bank_list = "\n".join(
-                f"  ✅ {b['institution']} (connected {b['connected_at'][:10]})"
-                for b in banks
-            )
-            await update.message.reply_text(
-                f"🏦 **Connected Banks**\n\n{bank_list}\n\n"
-                "Try:\n"
-                "• \"How much did I spend this week?\"\n"
-                "• \"What's my bank balance?\"\n"
-                "• \"How much did I spend on food?\"\n\n"
-                "To add another bank, use the Kiyomi app.",
-                parse_mode="Markdown",
-            )
-        else:
-            await update.message.reply_text(
-                "🏦 **Connect Your Bank**\n\n"
-                "To link your bank account, open the Kiyomi app "
-                "and tap 'Connect Bank' in Settings.\n\n"
-                "Once connected, you can ask me:\n"
-                "• \"How much did I spend this month?\"\n"
-                "• \"What's my balance?\"\n"
-                "• \"Am I on budget?\"\n\n"
-                "Your data stays private — only you and I can see it. 🔒",
-                parse_mode="Markdown",
-            )
-    except ImportError:
-        await update.message.reply_text(
-            "Bank connection isn't available in this version. "
-            "Update Kiyomi to get Plaid integration!"
-        )
-
-
-
-
-
-async def proactive_check_loop(app: Application):
-    """Run proactive checks every 4 hours."""
-    try:
-        from skills.proactive import run_proactive_check
-        config = load_config()
-        chat_id = config.get("telegram_user_id", "")
-        if not chat_id:
-            logger.info("No user ID yet — skipping proactive checks until first message")
-            return
-        
-        while True:
-            await asyncio.sleep(4 * 60 * 60)  # 4 hours
-            try:
-                await run_proactive_check(app.bot, chat_id)
-            except Exception as e:
-                logger.error(f"Proactive check failed: {e}")
-    except ImportError:
-        logger.info("Proactive module not available — running without proactive checks")
-    except Exception as e:
-        logger.error(f"Proactive loop error: {e}")
-
-
-async def post_init(app: Application):
-    """Called after bot starts — detect bot name and kick off background tasks."""
-    # Detect bot's display name from Telegram
-    try:
-        bot_info = await app.bot.get_me()
-        bot_display_name = bot_info.first_name or "Kiyomi"
-        config = load_config()
-        if config.get("bot_name") != bot_display_name:
-            config["bot_name"] = bot_display_name
-            config["bot_username"] = bot_info.username or ""
-            save_config(config)
-            logger.info(f"🌸 Bot identity: {bot_display_name} (@{bot_info.username})")
-    except Exception as e:
-        logger.warning(f"Could not detect bot name: {e}")
-    
-    # --- Startup update check ---
-    try:
-        config = load_config()
-        auto_update = config.get("auto_update", False)
-        chat_id = config.get("telegram_user_id", "")
-        
-        # Check for updates on startup
-        update_info = await check_for_updates()
-        
-        if update_info['available']:
-            if auto_update:
-                # Auto-update silently if enabled
-                logger.info("Auto-update enabled, updating silently...")
-                update_result = await perform_update()
-                if update_result['success']:
-                    logger.info(f"Auto-update successful: {update_result['message']}")
-                    if chat_id:
-                        try:
-                            message = (
-                                f"🎉 I updated myself to the latest version!\n\n"
-                                f"**What's new:**\n{update_result['changes']}\n\n"
-                                f"Ready to help you with the latest features! ✨"
-                            )
-                            await app.bot.send_message(chat_id, message, parse_mode="Markdown")
-                        except Exception as notify_error:
-                            logger.warning(f"Could not notify user of auto-update: {notify_error}")
-                    # Restart after auto-update
-                    await restart_bot()
-                else:
-                    logger.error(f"Auto-update failed: {update_result['message']}")
-            else:
-                # Notify user that updates are available
-                if chat_id:
-                    try:
-                        message = (
-                            f"🎉 Hey! I have updates available.\n\n"
-                            f"**What's new:**\n{update_info['changes']}\n\n"
-                            f"Say 'update' to get the latest features! ✨"
-                        )
-                        await app.bot.send_message(chat_id, message, parse_mode="Markdown")
-                        logger.info("Notified user about available updates")
-                    except Exception as notify_error:
-                        logger.warning(f"Could not notify user about updates: {notify_error}")
-        else:
-            logger.info("No updates available at startup")
-            
-    except Exception as e:
-        logger.error(f"Startup update check failed: {e}")
-    
-    asyncio.create_task(proactive_check_loop(app))
-    
-    # Start the Scheduler (fires reminders, morning briefs, skill nudges)
-    try:
-        from scheduler import Scheduler
-        config = load_config()
-        chat_id = config.get("telegram_user_id", "")
-        if chat_id:
-            sched = Scheduler(app.bot, chat_id)
-            asyncio.create_task(sched.run())
-            logger.info("🌸 Scheduler started (reminders, morning brief, nudges)")
-        else:
-            logger.info("No user ID yet — scheduler will start on first message")
-    except Exception as e:
-        logger.warning(f"Scheduler failed to start: {e}")
-    
-    logger.info("🌸 Background tasks started")
-
-
-async def cmd_apps(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /apps command — show recent apps built by Kiyomi."""
-    await update.message.chat.send_action(ChatAction.TYPING)
-    
-    try:
-        from app_builder import get_recent_apps, get_app_stats
-        
-        apps = get_recent_apps(limit=10)
-        stats = get_app_stats()
-        
-        if not apps:
-            response = (
-                "🔧 **Your Apps**\n\n"
-                "No apps built yet! I can create apps for you.\n\n"
-                "**Try saying:**\n"
-                "• \"Build me a client intake form\"\n"
-                "• \"Create a to-do list app\"\n"
-                "• \"Make me a calculator\"\n"
-                "• \"Build a expense tracker\"\n\n"
-                "I'll generate a complete, self-contained HTML app that works offline! ✨"
-            )
-            await update.message.reply_text(response, parse_mode="Markdown")
-            return
-        
-        response = f"🔧 **Your Apps** ({stats['total_apps']} total, {stats['total_size_mb']} MB)\n\n"
-        
-        for app in apps:
-            response += (
-                f"**{app['app_name']}**\n"
-                f"📱 {app['description']}\n"
-                f"📅 Created: {app['created']} ({app['size_kb']} KB)\n"
-                f"📁 `{app['file_path']}`\n\n"
-            )
-        
-        response += (
-            "💡 **Tip:** Double-click any HTML file to open it in your browser!\n\n"
-            "Want a new app? Just tell me what you need! 🎯"
-        )
-        
-        # Split if too long for Telegram
-        if len(response) > 4000:
-            chunks = [response[i:i+4000] for i in range(0, len(response), 4000)]
-            for chunk in chunks:
-                await update.message.reply_text(chunk, parse_mode="Markdown")
-        else:
-            await update.message.reply_text(response, parse_mode="Markdown")
-        
-    except ImportError:
-        await update.message.reply_text("App builder feature is being set up! 🔧")
-    except Exception as e:
-        logger.error(f"Apps command error: {e}")
-        await update.message.reply_text("Sorry, I had trouble loading your apps. 😅")
-
-
-def _build_app():
-    """Build the Telegram application with all handlers."""
+def _build_app() -> Application | None:
+    """Build the Telegram Application."""
     config = load_config()
     token = config.get("telegram_token", "")
-    
     if not token:
-        logger.error("No Telegram bot token configured! Run Kiyomi setup first.")
+        logger.error("No Telegram token configured")
         return None
-    
-    app = Application.builder().token(token).post_init(post_init).build()
-    
+
+    app = Application.builder().token(token).build()
+
     # Commands
     app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("reminders", cmd_reminders))
-    app.add_handler(CommandHandler("forget", cmd_forget))
-    app.add_handler(CommandHandler("confirmforget", cmd_confirmforget))
-    app.add_handler(CommandHandler("health", cmd_health))
-    app.add_handler(CommandHandler("budget", cmd_budget))
-    app.add_handler(CommandHandler("tasks", cmd_tasks))
-    app.add_handler(CommandHandler("gettoknow", cmd_gettoknow))
-    app.add_handler(CommandHandler("memory", cmd_memory))
-    app.add_handler(CommandHandler("export", cmd_export))
-    app.add_handler(CommandHandler("lookup", cmd_lookup))
-    app.add_handler(CommandHandler("connect", cmd_connect))
-    app.add_handler(CommandHandler("receipts", cmd_receipts))
-    app.add_handler(CommandHandler("profile", cmd_profile))
-    app.add_handler(CommandHandler("apps", cmd_apps))
-    app.add_handler(CommandHandler("cron", cmd_cron))
-    app.add_handler(CommandHandler("removecron", cmd_removecron))
-    app.add_handler(CommandHandler("webhooks", cmd_webhooks))
-    app.add_handler(CommandHandler("removewebhook", cmd_removewebhook))
+    app.add_handler(CommandHandler("reset", cmd_reset))
+    app.add_handler(CommandHandler("cli", cmd_cli))
+    app.add_handler(CommandHandler("identity", cmd_identity))
+    app.add_handler(CommandHandler("update", cmd_update))
 
-    # Messages
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    
+    # All messages
+    app.add_handler(MessageHandler(
+        filters.TEXT | filters.PHOTO | filters.Document.ALL | filters.VOICE,
+        handle_message
+    ))
+
     return app
 
 
+# --- Entry Points ---
+
 def main():
-    """Start the bot (works from main thread only — uses signal handlers)."""
-    app = _build_app()
-    if not app:
+    """Run the bot (blocking, with signal handlers)."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+
+    config = load_config()
+    if not config.get("telegram_token"):
+        logger.error("No Telegram token. Run onboarding first.")
         sys.exit(1)
-    logger.info("🌸 Kiyomi is starting up...")
+
+    if not config.get("cli"):
+        logger.error("No CLI configured. Run onboarding first.")
+        sys.exit(1)
+
+    logger.info(f"Kiyomi v5.0 starting — CLI: {config['cli']}")
+    app = _build_app()
     app.run_polling(drop_pending_updates=True)
 
 
 def main_threaded():
     """Start the bot from a background thread (no signal handlers).
-    
+
     Used when running inside the PyInstaller menu bar app.
-    Uses the lower-level API to avoid set_wakeup_fd errors.
     """
     app = _build_app()
     if not app:
         raise RuntimeError("No Telegram token configured")
-    
-    logger.info("🌸 Kiyomi is starting up (threaded mode)...")
-    
+
+    config = load_config()
+    logger.info(f"Kiyomi v5.0 starting (threaded) — CLI: {config.get('cli', '?')}")
+
     async def _run():
         await app.initialize()
         await app.start()
         await app.updater.start_polling(drop_pending_updates=True)
-        logger.info("🌸 Kiyomi is running! Waiting for messages...")
-        # Block forever (until thread is killed)
+        logger.info("Kiyomi is running! Waiting for messages...")
         try:
             await asyncio.Event().wait()
         finally:
             await app.updater.stop()
             await app.stop()
             await app.shutdown()
-    
+
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(_run())
