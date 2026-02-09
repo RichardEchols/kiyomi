@@ -1,5 +1,5 @@
 """
-Kiyomi Lite — Reminder System
+Kiyomi — Reminder System
 "Remind me about my budget every morning" → just works.
 
 Includes scheduler-facing helpers:
@@ -30,8 +30,11 @@ REMINDERS_FILE = CONFIG_DIR / "reminders.json"
 def load_reminders() -> list:
     """Load all reminders."""
     if REMINDERS_FILE.exists():
-        with open(REMINDERS_FILE) as f:
-            return json.load(f)
+        try:
+            with open(REMINDERS_FILE) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            logger.error(f"Failed to load reminders.json: {e}")
     return []
 
 

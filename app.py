@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Kiyomi Lite — Menu Bar App
+Kiyomi — Menu Bar App
 Sits in your menu bar. Runs the engine. Opens Telegram.
 That's it. Simple.
 """
@@ -959,11 +959,9 @@ def open_onboarding(port=8765):
 def open_telegram():
     """Open Telegram to chat with Kiyomi."""
     config = load_config()
-    token = config.get("telegram_token", "")
-    if token:
-        # Extract bot username from token (first part before :)
-        # User should have their bot link saved
-        webbrowser.open("https://telegram.org")
+    bot_username = config.get("bot_username", "")
+    if bot_username:
+        webbrowser.open(f"https://t.me/{bot_username}")
     else:
         webbrowser.open("https://telegram.org")
 

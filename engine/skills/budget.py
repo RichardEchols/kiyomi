@@ -1,5 +1,5 @@
 """
-Kiyomi Lite — Budget Tracker Skill
+Kiyomi — Budget Tracker Skill
 Detects spending, income, and budget mentions in natural conversation.
 Extracts amounts, categories, and stores transactions.
 """

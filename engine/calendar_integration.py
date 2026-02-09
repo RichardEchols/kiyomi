@@ -1,5 +1,5 @@
 """
-Kiyomi Lite — Google Calendar Integration
+Kiyomi — Google Calendar Integration
 
 Provides read/write access to Google Calendar via OAuth2.
 Features:

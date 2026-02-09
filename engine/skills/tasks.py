@@ -1,5 +1,5 @@
 """
-Kiyomi Lite — Task Manager Skill
+Kiyomi — Task Manager Skill
 Detects to-dos, deadlines, and follow-ups in natural conversation.
 Extracts task text, due dates, and priority.
 """

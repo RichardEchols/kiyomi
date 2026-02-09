@@ -7,3 +7,20 @@ node_modules/
 sessions.json
 *.log
 .DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Memory files (personal data)
+memory/*.md
+
+# Node
+node_modules/
+
+# Temp files
+temp/
+screenshots/
+
+# SDK bridge sessions (personal data)
+sdk-bridge/sessions.json

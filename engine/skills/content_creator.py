@@ -1,5 +1,5 @@
 """
-Kiyomi Lite — Content Creator Skill
+Kiyomi — Content Creator Skill
 Tracks: content ideas, posting schedule, analytics/performance, drafts
 """
 from __future__ import annotations

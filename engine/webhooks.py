@@ -136,7 +136,7 @@ def validate_signature(hook: dict, payload_bytes: bytes, signature: str) -> bool
     if signature.startswith("sha256="):
         signature = signature[7:]
 
-    expected = hmac.new(
+    expected = hmac.HMAC(
         secret.encode("utf-8"),
         payload_bytes,
         hashlib.sha256,
@@ -174,7 +174,7 @@ def handle_webhook(hook_id: str, payload: str, signature: Optional[str] = None) 
     # Truncate very large payloads to avoid overwhelming AI
     truncated_payload = payload[:5000]
     if len(payload) > 5000:
-        truncated_payload += "\n\n[Payload truncated — original was {len(payload)} chars]"
+        truncated_payload += f"\n\n[Payload truncated — original was {len(payload)} chars]"
 
     # Substitute payload into action template
     action = hook.get("action", "Process this webhook payload: {payload}")

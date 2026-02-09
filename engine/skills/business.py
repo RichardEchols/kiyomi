@@ -1,5 +1,5 @@
 """
-Kiyomi Lite — Business Features Skill
+Kiyomi — Business Features Skill
 Professional business management for entrepreneurs, freelancers, and small business owners.
 
 Core Features:

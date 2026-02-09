@@ -97,7 +97,7 @@ class CLIRouter:
             logger.error(f"CLI router error ({provider}): {e}")
             return f"CLI error: {str(e)[:100]}"
 
-    # ── Claude (SDK bridge preferred, CLI fallback) ─────────────────
+    # -- Claude (SDK bridge preferred, CLI fallback) ---------------------
 
     async def _execute_claude(
         self, message: str, cli_path: Optional[str] = None,
@@ -155,7 +155,7 @@ class CLIRouter:
 
         payload_dict = {
             "prompt": message,
-            "userId": "richard",
+            "userId": "default",
             "cwd": str(Path.home()),
             "maxTurns": max_turns,
             "systemPrompt": system_prompt or "",
@@ -196,7 +196,7 @@ class CLIRouter:
         with urlopen(req, timeout=SDK_BRIDGE_TIMEOUT) as resp:
             return json.loads(resp.read())
 
-    # ── Codex CLI (agentic) ───────────────────────────────────────────
+    # -- Codex CLI (agentic) -----------------------------------------------
 
     async def _execute_codex(
         self, message: str, cli_path: Optional[str] = None,
@@ -226,7 +226,7 @@ class CLIRouter:
 
         return await self._run(args, "Codex")
 
-    # ── Gemini CLI (agentic) ──────────────────────────────────────────
+    # -- Gemini CLI (agentic) ----------------------------------------------
 
     async def _execute_gemini(
         self, message: str, cli_path: Optional[str] = None,
@@ -256,7 +256,7 @@ class CLIRouter:
 
         return await self._run(args, "Gemini")
 
-    # ── Shared execution ─────────────────────────────────────────────
+    # -- Shared execution ---------------------------------------------------
 
     async def _run(self, args: list, label: str) -> str:
         """Run a CLI subprocess with proper env, cwd, and timeout."""
@@ -306,7 +306,7 @@ class CLIRouter:
         env["PATH"] = existing
         return env
 
-    # ── Utilities ─────────────────────────────────────────────────────
+    # -- Utilities -----------------------------------------------------------
 
     def check_cli_available(self, cli_name: str) -> bool:
         """Check if CLI tool is available in expanded PATH."""

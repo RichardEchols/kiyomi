@@ -1,5 +1,5 @@
 """
-Kiyomi Lite — Import Your Brain
+Kiyomi — Import Your Brain
 Parse exported AI chat histories and extract what matters.
 Supports: ChatGPT (conversations.json), Gemini (Takeout), Claude exports.
 User drags a file → we silently learn who they are.

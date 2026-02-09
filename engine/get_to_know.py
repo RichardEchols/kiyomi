@@ -1,5 +1,5 @@
 """
-Kiyomi Lite — Get to Know You Flow
+Kiyomi — Get to Know You Flow
 Friendly onboarding conversation that builds a user profile.
 Runs after first setup, asks warm questions, saves everything to memory.
 """

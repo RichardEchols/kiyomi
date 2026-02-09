@@ -14,8 +14,8 @@ logger = logging.getLogger(__name__)
 # Previous patterns were too aggressive (e.g. "open\s+\w+" matched normal conversation).
 # Now we only trigger on unambiguous computer-control language.
 COMPUTER_ACTION_PATTERNS = [
-    # Explicit "my computer" phrases
-    r"on\s+my\s+(computer|mac|laptop|desktop)[,\s]",
+    # Explicit "my computer" phrases — requires action verb
+    r"(do\s+something|perform|execute|run|automate)\s+on\s+my\s+(computer|mac|laptop|desktop)",
     r"use\s+my\s+(computer|mac|laptop|desktop)\s+to",
     r"control\s+my\s+(computer|mac|laptop|desktop)",
 

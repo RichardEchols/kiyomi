@@ -1,6 +1,6 @@
 #!/bin/bash
-# Kiyomi v4.0 Installer
-# Runs inside KiyomiInstaller.app — called by the app binary
+# Kiyomi Installer — Double-click to install
+# Works on any Mac with Python 3.10+
 
 set -e
 

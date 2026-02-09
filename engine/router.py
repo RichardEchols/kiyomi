@@ -1,7 +1,7 @@
 """
-Kiyomi — Model Router (Super Kiyomi Edition)
-Routes messages to the right AI provider and model.
-Supports dual-model routing: Sonnet for chat, Opus for tasks.
+Kiyomi — Model Router
+Routes messages to the right AI provider (Gemini, Claude, GPT).
+User never sees this — it just works.
 """
 import logging
 from typing import Optional

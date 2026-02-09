@@ -1,5 +1,5 @@
 """
-Kiyomi Lite — Proactive Engine
+Kiyomi — Proactive Engine
 Periodically checks all skills for nudges/reminders and sends them via Telegram.
 
 This is NOT a skill — it's the scheduler that queries all skills.

@@ -1,5 +1,5 @@
 """
-Kiyomi Lite — Tool Layer
+Kiyomi — Tool Layer
 
 Defines tools the AI can call silently:
 - web_search (DuckDuckGo HTML)
@@ -660,9 +660,9 @@ def analyze_image(image_path: str, question: str = "") -> str:
     # analysis. Fall back to whichever API key is available.
     if provider.endswith("-cli"):
         fallback_map = [
-            ("gemini_key", "gemini"),
-            ("anthropic_key", "anthropic"),
             ("openai_key", "openai"),
+            ("anthropic_key", "anthropic"),
+            ("gemini_key", "gemini"),
         ]
         found_fallback = False
         for key_name, fb_provider in fallback_map:

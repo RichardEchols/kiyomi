@@ -1,5 +1,5 @@
 """
-Kiyomi Lite — Health Tracker Skill
+Kiyomi — Health Tracker Skill
 Tracks: medications, vitals, symptoms, appointments, exercise
 """
 from __future__ import annotations

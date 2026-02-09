@@ -1,5 +1,5 @@
 """
-Kiyomi Lite — Lawyer / Legal Practice Skill
+Kiyomi — Lawyer / Legal Practice Skill
 Tracks: cases, court deadlines, billable hours, client notes, opposing counsel
 """
 from __future__ import annotations

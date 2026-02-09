@@ -12,4 +12,3 @@ openai>=1.0.0
 # Optional features (guarded imports — installed for full functionality)
 requests>=2.31.0
 pillow>=10.0.0
-pyautogui>=0.9.54

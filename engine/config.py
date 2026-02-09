@@ -1,5 +1,5 @@
 """
-Kiyomi Lite — Simple Configuration
+Kiyomi — Simple Configuration
 All config lives in ~/.kiyomi/config.json
 """
 import json
@@ -49,11 +49,15 @@ def load_config() -> dict:
     """Load config from ~/.kiyomi/config.json."""
     ensure_dirs()
     if CONFIG_FILE.exists():
-        with open(CONFIG_FILE) as f:
-            stored = json.load(f)
-            # Merge with defaults (adds any new keys)
-            config = {**DEFAULT_CONFIG, **stored}
-            return config
+        try:
+            with open(CONFIG_FILE) as f:
+                stored = json.load(f)
+                # Merge with defaults (adds any new keys)
+                config = {**DEFAULT_CONFIG, **stored}
+                return config
+        except (json.JSONDecodeError, IOError) as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to load config.json: {e}")
     return DEFAULT_CONFIG.copy()
 
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Kiyomi Lite — Telegram Bot
+Kiyomi — Telegram Bot
 Simple. Clean. Just works.
 
 User messages Kiyomi → Kiyomi responds using their AI → memory builds silently.
@@ -49,20 +49,13 @@ from get_to_know import (
     start_onboarding, handle_onboarding_message
 )
 from image_gen import is_image_request, generate_image
-from computer_control import is_computer_action, execute_computer_action
-
-# Gateway (agent-to-agent coordination)
 try:
-    from engine.gateway import (
-        init_gateway, get_registry, get_communicator,
-        parse_user_delegation, parse_delegation
-    )
-    _gateway_registry, _gateway_comm = init_gateway()
-    HAS_GATEWAY = bool(_gateway_registry and _gateway_registry.self_agent)
-except Exception as _gw_err:
-    HAS_GATEWAY = False
-    _gateway_registry = None
-    _gateway_comm = None
+    from computer_control import is_computer_action, execute_computer_action
+    HAS_COMPUTER_CONTROL = True
+except ImportError:
+    HAS_COMPUTER_CONTROL = False
+
+HAS_GATEWAY = False
 
 # Ensure config/logs dirs exist before configuring logging.
 ensure_dirs()
@@ -191,12 +184,6 @@ CRITICAL RULES:
 4. KEEP RESPONSES SHORT. This is Telegram on a phone. 2-4 sentences max for casual chat. Only go longer when they ask for detailed info.
 5. When you create a file, tell them briefly what you made (1 sentence). The file appears automatically right after your message.
 """
-    # Add team awareness if gateway is active
-    if HAS_GATEWAY and _gateway_registry:
-        team_prompt = _gateway_registry.get_team_prompt()
-        if team_prompt:
-            prompt += "\n" + team_prompt
-
     return prompt.strip()
 
 
@@ -426,43 +413,6 @@ async def _handle_message_inner(update: Update, context: ContextTypes.DEFAULT_TY
         
         return  # Don't process the message further
 
-    # --- Agent delegation check ---
-    # If user explicitly addresses a teammate (@arianna, tell brock, etc.)
-    if HAS_GATEWAY and _gateway_comm and _gateway_registry:
-        delegation = parse_user_delegation(user_msg, _gateway_registry)
-        if delegation:
-            agent_id, task_prompt = delegation
-            agent = _gateway_registry.get_agent(agent_id)
-            if agent:
-                await update.message.chat.send_action(ChatAction.TYPING)
-                await update.message.reply_text(
-                    f"Sending that to {agent.name} {agent.emoji}..."
-                )
-
-                try:
-                    result = await _gateway_comm.send_task(agent_id, task_prompt, timeout=300)
-                    if result.get("status") == "completed":
-                        response_text = f"**{agent.name} {agent.emoji}:**\n\n{result.get('result', 'Done.')}"
-                    else:
-                        error = result.get("error", "Unknown error")
-                        response_text = f"{agent.name} couldn't complete that: {error}"
-
-                    # Send response (split if too long)
-                    if len(response_text) > 4000:
-                        chunks = [response_text[i:i+4000] for i in range(0, len(response_text), 4000)]
-                        for chunk in chunks:
-                            await update.message.reply_text(chunk, parse_mode="Markdown")
-                    else:
-                        await update.message.reply_text(response_text, parse_mode="Markdown")
-
-                    log_conversation(user_msg, f"[Delegated to {agent.name}: {task_prompt[:100]}]", user_dir=user_memory_dir)
-                except Exception as e:
-                    logger.error(f"Delegation to {agent_id} failed: {e}")
-                    await update.message.reply_text(
-                        f"Couldn't reach {agent.name} right now. Error: {str(e)[:200]}"
-                    )
-                return
-
     # Check for cron task (scheduled automation — different from reminders)
     cron_result = _detect_cron_request(user_msg)
     if cron_result:
@@ -495,10 +445,7 @@ async def _handle_message_inner(update: Update, context: ContextTypes.DEFAULT_TY
         name, action_template = webhook_result
         hook = create_webhook(name, action_template)
         # Use actual IP from agent registry, fallback to localhost
-        _self_host = "127.0.0.1"
-        if HAS_GATEWAY and _gateway_registry and _gateway_registry.self_agent:
-            _self_host = _gateway_registry.self_agent.host
-        hook_url = f"http://{_self_host}:8765/api/webhook/{hook['id']}"
+        hook_url = f"http://127.0.0.1:8765/api/webhook/{hook['id']}"
         await update.message.reply_text(
             f"Webhook created! 🔔\n\n"
             f"*Name:* {name}\n"
@@ -652,7 +599,7 @@ async def _handle_message_inner(update: Update, context: ContextTypes.DEFAULT_TY
         # Continue with normal processing
     
     # Check for computer control request
-    if config.get("computer_control_enabled", True) and is_computer_action(user_msg):
+    if HAS_COMPUTER_CONTROL and config.get("computer_control_enabled", True) and is_computer_action(user_msg):
         logger.info(f"Computer control request detected: {user_msg[:100]}...")
         
         # Get the appropriate provider and API key for computer control
@@ -792,42 +739,6 @@ async def _handle_message_inner(update: Update, context: ContextTypes.DEFAULT_TY
     
     # Run skills post-message hook (detect & extract health, budget, tasks)
     run_post_message_hook(user_msg, response)
-
-    # --- AI response delegation ---
-    # If the AI decided to delegate (e.g. "@arianna: Draft a launch email"),
-    # intercept the response and route it to the teammate instead of sending as text.
-    if HAS_GATEWAY and _gateway_comm and _gateway_registry:
-        delegation = parse_delegation(response, _gateway_registry)
-        if delegation:
-            agent_id, task_prompt = delegation
-            agent = _gateway_registry.get_agent(agent_id)
-            if agent:
-                await update.message.reply_text(
-                    f"Let me pass that to {agent.name} {agent.emoji}..."
-                )
-                try:
-                    result = await _gateway_comm.send_task(agent_id, task_prompt, timeout=300)
-                    if result.get("status") == "completed":
-                        response_text = f"**{agent.name} {agent.emoji}:**\n\n{result.get('result', 'Done.')}"
-                    else:
-                        error = result.get("error", "Unknown error")
-                        response_text = f"{agent.name} couldn't complete that: {error}"
-
-                    if len(response_text) > 4000:
-                        chunks = [response_text[i:i+4000] for i in range(0, len(response_text), 4000)]
-                        for chunk in chunks:
-                            await update.message.reply_text(chunk, parse_mode="Markdown")
-                    else:
-                        await update.message.reply_text(response_text, parse_mode="Markdown")
-
-                    log_conversation(user_msg, f"[AI delegated to {agent.name}: {task_prompt[:100]}]", user_dir=user_memory_dir)
-                except Exception as e:
-                    logger.error(f"AI delegation to {agent_id} failed: {e}")
-                    await update.message.reply_text(
-                        f"I tried to pass this to {agent.name} but couldn't reach them. "
-                        f"Here's what I was going to ask:\n\n{task_prompt[:500]}"
-                    )
-                return  # Don't send the raw @agent response
 
     # Voice reply check — respond with audio if appropriate
     try:
@@ -1519,10 +1430,7 @@ async def cmd_webhooks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         name = h.get("name", "Unnamed")
         hook_id = h.get("id", "?")
         count = h.get("trigger_count", 0)
-        _wh_host = "127.0.0.1"
-        if HAS_GATEWAY and _gateway_registry and _gateway_registry.self_agent:
-            _wh_host = _gateway_registry.self_agent.host
-        url = f"http://{_wh_host}:8765/api/webhook/{hook_id}"
+        url = f"http://127.0.0.1:8765/api/webhook/{hook_id}"
         lines.append(
             f"• **{name}**\n"
             f"  URL: `{url}`\n"
@@ -1709,76 +1617,7 @@ async def post_init(app: Application):
     except Exception as e:
         logger.warning(f"Scheduler failed to start: {e}")
     
-    # Initialize gateway execute function (so other agents can send us tasks)
-    if HAS_GATEWAY and _gateway_comm:
-        async def _gateway_execute(prompt: str) -> str:
-            """Execute a task delegated by another agent via Claude Code CLI."""
-            config = load_config()
-            provider, model = pick_model("task", config)
-            api_key = get_api_key(config)
-            system_prompt = build_system_prompt(config)
-            result = await chat(
-                message=prompt,
-                provider=provider,
-                model=model,
-                api_key=api_key,
-                system_prompt=system_prompt,
-                history=[],
-                cli_path=config.get("cli_path", ""),
-                cli_timeout=get_cli_timeout(config),
-            )
-            return result
-
-        _gateway_comm.set_execute_fn(_gateway_execute)
-
-        # Set up Telegram notification for completed tasks
-        config = load_config()
-        chat_id = config.get("telegram_user_id", "")
-        if chat_id:
-            async def _gateway_notify(message: str):
-                try:
-                    await app.bot.send_message(chat_id, message, parse_mode="Markdown")
-                except Exception as e:
-                    logger.warning(f"Gateway notify failed: {e}")
-            _gateway_comm.set_notify_fn(_gateway_notify)
-
-        agent_name = _gateway_registry.self_agent.name if _gateway_registry.self_agent else "Kiyomi"
-        team_count = len(_gateway_registry.team)
-        logger.info(f"🌐 Gateway active: {agent_name} with {team_count} teammates")
-
     logger.info("🌸 Background tasks started")
-
-
-async def cmd_team(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /team command — show agent team status."""
-    await update.message.chat.send_action(ChatAction.TYPING)
-
-    if not HAS_GATEWAY or not _gateway_registry or not _gateway_registry.self_agent:
-        await update.message.reply_text(
-            "No agent team configured.\n\n"
-            "To set up a team, create `~/.kiyomi/agents.json` with your agent definitions."
-        )
-        return
-
-    # Build status message
-    self_agent = _gateway_registry.self_agent
-    lines = [f"**{self_agent.name}** {self_agent.emoji} (me) — {self_agent.role}\n"]
-
-    if _gateway_comm:
-        statuses = await _gateway_comm.check_all_agents()
-        for status in statuses:
-            agent = _gateway_registry.get_agent(status["agent_id"])
-            if agent:
-                icon = "🟢" if status["status"] == "online" else "🔴"
-                lines.append(f"{icon} **{agent.name}** {agent.emoji} — {agent.role}")
-            else:
-                lines.append(f"❓ {status['agent_id']} — {status['status']}")
-    else:
-        for agent in _gateway_registry.team.values():
-            lines.append(f"⚪ **{agent.name}** {agent.emoji} — {agent.role}")
-
-    lines.append(f"\n_To delegate: @name your request_")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 async def cmd_apps(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1863,7 +1702,6 @@ def _build_app():
     app.add_handler(CommandHandler("receipts", cmd_receipts))
     app.add_handler(CommandHandler("profile", cmd_profile))
     app.add_handler(CommandHandler("apps", cmd_apps))
-    app.add_handler(CommandHandler("team", cmd_team))
     app.add_handler(CommandHandler("cron", cmd_cron))
     app.add_handler(CommandHandler("removecron", cmd_removecron))
     app.add_handler(CommandHandler("webhooks", cmd_webhooks))

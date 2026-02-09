@@ -1,5 +1,5 @@
 """
-Kiyomi Lite — Smart Notifications / "Kiyomi Nudges"
+Kiyomi — Smart Notifications / "Kiyomi Nudges"
 The #1 retention feature. Kiyomi reaches out FIRST — budget alerts,
 bill reminders, habit nudges, health checks, birthday heads-ups,
 follow-ups on life events, and savings motivation.

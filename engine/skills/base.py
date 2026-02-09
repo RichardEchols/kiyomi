@@ -1,5 +1,5 @@
 """
-Kiyomi Lite — Base Skill Class
+Kiyomi — Base Skill Class
 All skills inherit from this. Keep it dead simple.
 """
 from __future__ import annotations

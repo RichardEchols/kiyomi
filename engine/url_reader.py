@@ -1,5 +1,5 @@
 """
-Kiyomi Lite — URL Reader
+Kiyomi — URL Reader
 Fetches web pages and extracts readable text.
 When user sends a link, Kiyomi reads it.
 """

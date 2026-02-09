@@ -1,5 +1,5 @@
 """
-Kiyomi Lite — Deep Memory System
+Kiyomi — Deep Memory System
 "The AI that actually remembers you."
 
 Memory is organized by category. Every meaningful fact gets saved,

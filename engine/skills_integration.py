@@ -1,5 +1,5 @@
 """
-Kiyomi Lite — Skills Integration
+Kiyomi — Skills Integration
 Bridges the skill system with the bot.
 This file handles:
 1. Running skills after each message (post-message hook)

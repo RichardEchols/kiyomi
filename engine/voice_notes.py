@@ -1,5 +1,5 @@
 """
-Kiyomi Lite — Voice Notes to Action Items
+Kiyomi — Voice Notes to Action Items
 Transform voice messages into structured action items: reminders, tasks, events, and facts.
 
 Core functions:

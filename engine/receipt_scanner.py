@@ -1,5 +1,5 @@
 """
-Kiyomi Lite — Receipt Scanner
+Kiyomi — Receipt Scanner
 Snap a photo of a receipt → extract items/total/merchant → categorize → add to budget.
 
 Usage:

@@ -286,7 +286,7 @@ app.get("/health", (req, res) => {
 
 // --- Start ---
 
-app.listen(PORT, "0.0.0.0", () => {
+app.listen(PORT, "127.0.0.1", () => {
   console.log(`Kiyomi SDK Bridge running on port ${PORT}`);
   console.log(`Sessions: ${Object.keys(sessions).length} active`);
   cleanOldSessions();

@@ -1,5 +1,5 @@
 """
-Kiyomi Lite — AI Provider Interface
+Kiyomi — AI Provider Interface
 Unified interface to Gemini, Claude, GPT, and CLI tools.
 Handles all the complexity so the bot.py doesn't have to.
 """

@@ -1,6 +1,6 @@
 """
-Kiyomi Lite — Proactive Scheduler
-Makes Kiyomi reach out. Fires reminders, sends morning briefs, runs skill nudges.
+Kiyomi — Proactive Scheduler
+Makes Kiyomi reach out. Fires reminders, morning briefs, skill nudges, and cron tasks.
 Runs every 60 seconds in the background.
 """
 from __future__ import annotations
@@ -75,7 +75,7 @@ class Scheduler:
             except Exception as e:
                 logger.error(f"Scheduler tick error: {e}")
 
-    # ── Reminders ───────────────────────────────────────────
+    # -- Reminders -------------------------------------------------------
 
     async def _fire_reminders(self, now: datetime):
         """Check reminders.json, fire any that are due."""
@@ -95,7 +95,142 @@ class Scheduler:
             except Exception as e:
                 logger.error(f"Failed to send reminder: {e}")
 
-    # ── Morning Brief ───────────────────────────────────────
+    # -- Cron Tasks -------------------------------------------------------
+
+    async def _fire_cron_tasks(self, now: datetime, config: dict):
+        """Check cron.json, fire any tasks that are due.
+
+        Unlike reminders (which send a text), cron tasks run the AI
+        with the task prompt and send the result to Telegram.
+        """
+        try:
+            try:
+                from cron import get_due_crons, mark_cron_run
+            except ImportError:
+                from engine.cron import get_due_crons, mark_cron_run
+        except ImportError:
+            return  # Module not available yet
+
+        due = get_due_crons(now)
+        if not due:
+            return
+
+        # Import AI chat and notification
+        try:
+            try:
+                from ai import chat
+            except ImportError:
+                from engine.ai import chat
+        except ImportError:
+            logger.error("Cannot import chat() for cron tasks")
+            return
+
+        try:
+            from engine.notify import send_notification
+        except ImportError:
+            send_notification = None
+
+        from engine.config import get_api_key, get_cli_timeout
+        from router import classify_message, pick_model
+
+        for cron in due:
+            task_prompt = cron.get("task", "")
+            cron_id = cron.get("id", "?")
+            schedule = cron.get("schedule_human", "")
+            task_script = cron.get("_script")  # Optional: run a Python module instead of AI
+
+            logger.info(f"Firing cron task: {task_prompt[:60]}... ({schedule})")
+
+            try:
+                # Check if this is a script-based task (e.g., watchtower_study)
+                if task_script:
+                    await self._run_script_task(task_script, cron_id, schedule)
+                    mark_cron_run(cron_id, now)
+                    logger.info(f"Script cron task completed: {cron_id}")
+                    continue
+
+                # Run the task through AI
+                task_type = classify_message(task_prompt)
+                provider, model = pick_model(task_type, config)
+                api_key = get_api_key(config)
+
+                system_prompt = (
+                    "You are Kiyomi, a personal assistant running a scheduled task. "
+                    "Complete the following task concisely and report the results. "
+                    "Keep your response under 1000 characters."
+                )
+
+                result = await chat(
+                    message=task_prompt,
+                    provider=provider,
+                    model=model,
+                    api_key=api_key if not provider.endswith("-cli") else "",
+                    system_prompt=system_prompt,
+                    history=[],
+                    cli_path=config.get("cli_path", ""),
+                    cli_timeout=get_cli_timeout(config),
+                )
+
+                # Send result to Telegram
+                msg = f"🔄 *Scheduled Task*\n_{schedule}_\n\n{result}"
+                try:
+                    await self.bot.send_message(
+                        chat_id=self.chat_id, text=msg[:4000], parse_mode="Markdown"
+                    )
+                except Exception:
+                    # Fallback without markdown if parsing fails
+                    await self.bot.send_message(
+                        chat_id=self.chat_id, text=msg[:4000]
+                    )
+
+                # macOS notification
+                if send_notification:
+                    send_notification("Kiyomi — Task Complete", task_prompt[:100])
+
+                # Mark as run and recalculate next_run
+                mark_cron_run(cron_id, now)
+                logger.info(f"Cron task completed: {cron_id}")
+
+            except Exception as e:
+                logger.error(f"Cron task {cron_id} failed: {e}")
+                try:
+                    await self.bot.send_message(
+                        chat_id=self.chat_id,
+                        text=f"⚠️ Scheduled task failed: {task_prompt[:100]}\nError: {str(e)[:200]}"
+                    )
+                except Exception:
+                    pass
+
+    # -- Script Tasks -------------------------------------------------------
+
+    async def _run_script_task(self, script_name: str, cron_id: str, schedule: str):
+        """Run a script-based cron task (e.g., watchtower_study).
+
+        Script tasks are Python modules in engine/ that have a run_watchtower_study()
+        or similar async function. They handle their own Telegram messaging.
+        """
+        logger.info(f"Running script task: {script_name}")
+        try:
+            if script_name == "watchtower_study":
+                from engine.watchtower_study import run_watchtower_study
+                await run_watchtower_study()
+            else:
+                logger.error(f"Unknown script task: {script_name}")
+                await self.bot.send_message(
+                    chat_id=self.chat_id,
+                    text=f"⚠️ Unknown script task: {script_name}"
+                )
+        except Exception as e:
+            logger.error(f"Script task {script_name} failed: {e}")
+            try:
+                await self.bot.send_message(
+                    chat_id=self.chat_id,
+                    text=f"⚠️ Script task failed: {script_name}\nError: {str(e)[:200]}"
+                )
+            except Exception:
+                pass
+
+    # -- Morning Brief -------------------------------------------------------
 
     async def _morning_brief(self, now: datetime, config: dict):
         """Send morning brief once per day at configured time."""
@@ -174,7 +309,7 @@ class Scheduler:
         lines.append(f"\n_Talk to me anytime — {bot_name} is here!_")
         return "\n".join(lines)
 
-    # ── Skill Nudges ────────────────────────────────────────
+    # -- Skill Nudges -------------------------------------------------------
 
     async def _skill_nudges(self, now: datetime):
         """Run skill proactive checks every 2 hours."""
@@ -212,7 +347,7 @@ class Scheduler:
         except Exception as e:
             logger.error(f"Nudge check failed: {e}")
 
-    # ── Smart Follow-Ups ──────────────────────────────────
+    # -- Smart Follow-Ups -------------------------------------------------------
 
     async def _check_follow_ups(self, config: dict):
         """Scan memory for events happening today or yesterday, send follow-ups."""
@@ -328,7 +463,7 @@ class Scheduler:
             except Exception as e:
                 logger.error(f"Failed to send follow-up: {e}")
 
-    # ── Weekly Digest ───────────────────────────────────────
+    # -- Weekly Digest -------------------------------------------------------
 
     async def _send_weekly_digest(self, config: dict):
         """Send a weekly digest every Sunday at 10 AM."""
@@ -355,7 +490,7 @@ class Scheduler:
         # Timestamp pattern: [2026-02-03 00:56]
         ts_pattern = re.compile(r"\[(\d{4}-\d{2}-\d{2})\s+\d{2}:\d{2}\]")
 
-        # ── Count facts added this week, by category ──
+        # -- Count facts added this week, by category --
         facts_by_category: dict[str, int] = {}
         total_new_facts = 0
 
@@ -380,7 +515,7 @@ class Scheduler:
                     facts_by_category[category] = count
                     total_new_facts += count
 
-        # ── Reminders completed this week ──
+        # -- Reminders completed this week --
         completed_count = 0
         try:
             reminders_path = Path.home() / ".kiyomi" / "reminders.json"
@@ -398,7 +533,7 @@ class Scheduler:
         except Exception:
             pass
 
-        # ── Active goals ──
+        # -- Active goals --
         goals: list[str] = []
         goals_file = MEMORY_DIR / "goals.md"
         if goals_file.exists():
@@ -413,7 +548,7 @@ class Scheduler:
             except Exception:
                 pass
 
-        # ── Upcoming events ──
+        # -- Upcoming events --
         upcoming: list[str] = []
         schedule_file = MEMORY_DIR / "schedule.md"
         if schedule_file.exists():
@@ -427,7 +562,7 @@ class Scheduler:
             except Exception:
                 pass
 
-        # ── Build the digest message ──
+        # -- Build the digest message --
         lines = [
             f"📊 *Your Week in Review*",
             f"_{week_start.strftime('%b %d')} – {now.strftime('%b %d, %Y')}_\n",
@@ -490,7 +625,7 @@ class Scheduler:
         except Exception as e:
             logger.error(f"Failed to send weekly digest: {e}")
 
-    # ── Smart Nudges (nudges.py) ──────────────────────────────
+    # -- Smart Nudges (nudges.py) -------------------------------------------------------
 
     async def _smart_nudges(self, now: datetime, config: dict):
         """Run Kiyomi Smart Nudges every 3 hours.
@@ -517,7 +652,7 @@ class Scheduler:
         except Exception as e:
             logger.error(f"Smart nudge check failed: {e}")
 
-    # ── Helpers ─────────────────────────────────────────────
+    # -- Helpers -------------------------------------------------------
 
     @staticmethod
     def _is_quiet(now: datetime, config: dict) -> bool:

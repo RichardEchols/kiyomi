@@ -1,5 +1,5 @@
 """
-Kiyomi Lite — Multi-User Support
+Kiyomi — Multi-User Support
 "Shared bot, separate memories."
 
 Manages user profiles and memory directories. Each user gets their own

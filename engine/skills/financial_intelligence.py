@@ -1,5 +1,5 @@
 """
-Kiyomi Lite — Smart Financial Intelligence Skill
+Kiyomi — Smart Financial Intelligence Skill
 The premium feature that makes Kiyomi worth $19/month.
 
 Capabilities:

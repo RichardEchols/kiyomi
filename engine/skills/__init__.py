@@ -1,5 +1,5 @@
 """
-Kiyomi Lite — Skill Registry
+Kiyomi — Skill Registry
 Auto-discovers and loads all skills from this package.
 """
 from __future__ import annotations
