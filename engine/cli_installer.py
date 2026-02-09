@@ -99,7 +99,7 @@ AUTH_CONFIG = {
             and bool(data.get("refresh_token"))
         ),
         "auth_command": ["gemini", "-p", "hello"],
-        "subscription": "Google One AI Premium ($20/mo)",
+        "subscription": "Google account (Free)",
         "display_name": "Gemini",
     },
 }

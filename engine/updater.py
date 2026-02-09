@@ -101,7 +101,7 @@ async def check_for_updates() -> dict:
             headers={"Accept": "application/vnd.github+json", "User-Agent": "Kiyomi-Updater"},
         )
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         response_data = await loop.run_in_executor(
             None, lambda: urllib.request.urlopen(req, timeout=15).read()
         )
@@ -177,7 +177,7 @@ async def perform_update() -> dict:
         logger.info(f"Downloading update {new_version} from {download_url}...")
 
         # Download zip to temp file
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         def _download():
             req = urllib.request.Request(

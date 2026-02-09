@@ -1,14 +1,14 @@
 # Kiyomi Self-Update System
 
-The self-update system allows Kiyomi to update herself from GitHub automatically or on demand.
+The self-update system allows Kiyomi to update herself from GitHub Releases automatically or on demand. No git dependency required.
 
 ## How It Works
 
 ### User-Triggered Updates
-Users can trigger updates by saying any of these in Telegram:
+Users can trigger updates via the `/update` command in Telegram, or by saying:
 - "update"
 - "update yourself"
-- "check for updates" 
+- "check for updates"
 - "upgrade"
 - "get latest version"
 - "please update"
@@ -20,89 +20,52 @@ The system **will NOT** trigger on:
 - "update my profile"
 - etc. (must be about Kiyomi herself)
 
-### Automatic Updates
+## Update Process
 
-#### Startup Check
-On every startup, Kiyomi:
-1. Checks GitHub for new commits
-2. If updates are available:
-   - **With auto_update=false** (default): Notifies user "Hey! I have updates available. Say 'update' to get the latest features!"
-   - **With auto_update=true**: Updates silently and restarts automatically
+When an update is triggered:
+1. **Check**: Query GitHub Releases API for the latest release tag
+2. **Compare**: Parse semantic version from `engine/VERSION` vs release tag
+3. **Download**: Download the release zip asset from GitHub
+4. **Backup**: Copy current `~/.kiyomi/app/` to `~/.kiyomi/app.backup/`
+5. **Extract**: Replace app files with the new release
+6. **Dependencies**: If `requirements.txt` changed, run `pip install -r requirements.txt`
+7. **Restart**: Replace the current process with `os.execv`
 
-#### Auto-Update Configuration
-Add to `~/.kiyomi/config.json`:
+## Configuration
+
+Auto-update can be enabled in `~/.kiyomi/config.json`:
 ```json
 {
   "auto_update": true
 }
 ```
 
-## Update Process
+## Files
 
-When an update is triggered:
-1. **Check**: `git fetch` and compare HEAD vs origin/main
-2. **Pull**: `git pull origin main` 
-3. **Dependencies**: If `requirements.txt` changed, run `pip install -r requirements.txt`
-4. **Restart**: Replace the current process with a fresh one
-5. **Notify**: Tell user what was updated
-
-## Files Modified
-
-### New Files
-- `engine/updater.py` - Core update functionality
-
-### Modified Files
-- `engine/bot.py` - Added update detection early in message handling + startup check
-- `engine/config.py` - Added `auto_update` configuration option
+- `engine/updater.py` — Core update functionality (GitHub Releases-based)
+- `engine/VERSION` — Current version string (source of truth)
 
 ## Testing
 
-Run the test suite:
 ```bash
 cd engine/
 python3 updater.py
 ```
 
-Test individual functions:
-```python
-from updater import is_update_request, check_for_updates
-import asyncio
-
-# Test detection
-print(is_update_request('update'))  # True
-print(is_update_request('update my calendar'))  # False
-
-# Test update check
-result = asyncio.run(check_for_updates())
-print(result)
-```
-
 ## Requirements
 
-- Must be running in a git repository
-- Git remote 'origin' pointing to GitHub repo
-- Main branch is 'main'
-- User must have write access to the repo directory (for pulling changes)
+- Internet access to reach `api.github.com`
+- No git installation needed
+- No repository clone needed
 
 ## Error Handling
 
-- Git not available: Gracefully degrades, no updates
-- Network issues: Returns error message, doesn't crash
-- Permission issues: Returns error message to user
-- Update conflicts: Handles git pull failures gracefully
+- Network issues: Returns error message, does not crash
+- Download failures: Restores from backup automatically
+- Version parse errors: Defaults to (0, 0, 0), triggering update
 
 ## Security
 
-- Only updates from the configured git remote
-- Uses same credentials as the current git setup
-- No external download of arbitrary code
+- Only downloads from the configured GitHub repo (RichardEchols/kiyomi)
 - Uses `os.execv` for secure process replacement
-
-## Future Enhancements
-
-Possible improvements:
-- Update rollback capability
-- Scheduled update checks (daily/weekly)
-- Update notifications in other channels
-- Version pinning/release channels
-- Update size/impact warnings
+- Backup is created before any files are replaced

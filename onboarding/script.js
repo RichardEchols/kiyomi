@@ -126,9 +126,8 @@ async function detectCLIs() {
         let bestCli = '';
 
         for (const cli of cliOrder) {
-            // Map provider keys from cli_installer format
-            const key = `${cli}-cli`;
-            const info = providers[key] || {};
+            // Map provider keys — detect_all() returns bare names (claude, codex, gemini)
+            const info = providers[cli] || providers[`${cli}-cli`] || {};
             const installed = info.installed || false;
             const meta = CLI_META[cli];
 

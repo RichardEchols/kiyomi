@@ -28,6 +28,8 @@ def _expanded_path() -> str:
         "/usr/local/bin",
         str(Path.home() / ".local" / "bin"),
         str(Path.home() / ".npm-global" / "bin"),
+        str(Path.home() / ".cargo" / "bin"),
+        str(Path.home() / ".nvm" / "current" / "bin"),
     ]
     path = os.environ.get("PATH", "")
     for p in extra:
@@ -89,6 +91,10 @@ class ClaudeAdapter(CLIAdapter):
         if not binary:
             raise FileNotFoundError("Claude CLI not found. Install with: npm install -g @anthropic-ai/claude-code")
 
+        # If an image was provided, include the path in the prompt for Claude to read
+        if image_path:
+            message = f"{message}\n\nImage file: {image_path}"
+
         cmd = [binary, "-p", message, "--output-format", "json", "--dangerously-skip-permissions"]
 
         if session_id:
@@ -100,8 +106,11 @@ class ClaudeAdapter(CLIAdapter):
 
     def parse_response(self, stdout, stderr, returncode):
         if returncode != 0 and not stdout.strip():
-            error = stderr.strip() if stderr else f"Claude CLI exited with code {returncode}"
-            return f"Error: {error}", None
+            logger.error(f"Claude CLI error (rc={returncode}): {stderr}")
+            # Show user-friendly message, log raw error
+            if "auth" in (stderr or "").lower() or "login" in (stderr or "").lower():
+                return "Claude needs to be re-authenticated. Run `claude` in your terminal to log in again.", None
+            return "Claude had trouble responding. Try again or use /reset to start fresh.", None
 
         # Claude outputs JSON with result and session_id
         try:
@@ -141,8 +150,10 @@ class CodexAdapter(CLIAdapter):
 
     def parse_response(self, stdout, stderr, returncode):
         if returncode != 0 and not stdout.strip():
-            error = stderr.strip() if stderr else f"Codex CLI exited with code {returncode}"
-            return f"Error: {error}", None
+            logger.error(f"Codex CLI error (rc={returncode}): {stderr}")
+            if "auth" in (stderr or "").lower() or "login" in (stderr or "").lower():
+                return "Codex needs to be re-authenticated. Run `codex login` in your terminal.", None
+            return "Codex had trouble responding. Try again or use /reset to start fresh.", None
 
         # Codex outputs JSONL — find last agent_message and thread_id
         text = ""
@@ -187,7 +198,11 @@ class GeminiAdapter(CLIAdapter):
     def build_command(self, message, session_id=None, model=None, cwd=None, image_path=None):
         binary = self.get_binary()
         if not binary:
-            raise FileNotFoundError("Gemini CLI not found. Install with: npm install -g @anthropic-ai/gemini-cli")
+            raise FileNotFoundError("Gemini CLI not found. Install with: npm install -g @google/gemini-cli")
+
+        # If an image was provided, include the path in the prompt for Gemini to read
+        if image_path:
+            message = f"{message}\n\nImage file: {image_path}"
 
         cmd = [binary, "-p", message, "-o", "json", "-y"]
 
@@ -200,8 +215,10 @@ class GeminiAdapter(CLIAdapter):
 
     def parse_response(self, stdout, stderr, returncode):
         if returncode != 0 and not stdout.strip():
-            error = stderr.strip() if stderr else f"Gemini CLI exited with code {returncode}"
-            return f"Error: {error}", None
+            logger.error(f"Gemini CLI error (rc={returncode}): {stderr}")
+            if "auth" in (stderr or "").lower() or "login" in (stderr or "").lower():
+                return "Gemini needs to be re-authenticated. Run `gemini` in your terminal to log in again.", None
+            return "Gemini had trouble responding. Try again or use /reset to start fresh.", None
 
         try:
             data = json.loads(stdout)
@@ -254,6 +271,5 @@ def sync_identity_file(cli_name: str, workspace: Path):
 
     target = workspace / target_name
     # Always overwrite — identity.md is source of truth
-    import shutil as _shutil
-    _shutil.copy2(str(source), str(target))
+    shutil.copy2(str(source), str(target))
     logger.debug(f"Synced identity.md → {target_name}")

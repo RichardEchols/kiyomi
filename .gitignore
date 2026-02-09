@@ -5,6 +5,7 @@ __pycache__/
 .env.local
 node_modules/
 sessions.json
+config.json
 *.log
 .DS_Store
 
@@ -15,12 +16,18 @@ sessions.json
 # Memory files (personal data)
 memory/*.md
 
-# Node
-node_modules/
+# Identity files (personal data)
+identity.md
+CLAUDE.md
+AGENTS.md
+GEMINI.md
 
 # Temp files
 temp/
 screenshots/
 
-# SDK bridge sessions (personal data)
+# Bot pool (contains tokens)
+data/bot_pool.json
+
+# SDK bridge sessions
 sdk-bridge/sessions.json

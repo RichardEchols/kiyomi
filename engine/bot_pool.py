@@ -1,9 +1,9 @@
 """
 Kiyomi Bot Pool — Manages pre-created Telegram bot tokens.
 
-Bots are created ahead of time via scripts/create_bots.py and stored in
-data/bot_pool.json. During onboarding, a user claims an unclaimed bot
-and gets a direct link to start chatting.
+Bots are stored in data/bot_pool.json (created on first use if absent).
+During onboarding, a user claims an unclaimed bot and gets a direct
+link to start chatting.
 """
 from __future__ import annotations
 

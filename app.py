@@ -37,8 +37,6 @@ LOGS_DIR = CONFIG_DIR / "logs"
 # Ensure dirs
 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
-(CONFIG_DIR / "memory").mkdir(parents=True, exist_ok=True)
-(CONFIG_DIR / "skills").mkdir(parents=True, exist_ok=True)
 
 # Raw debug log (no dependency on logging module working)
 _debug_log = LOGS_DIR / "debug.log"
@@ -70,6 +68,7 @@ logger = logging.getLogger("kiyomi-app")
 
 # Engine process
 engine_process = None
+_app_start_time = time.time()
 
 
 def is_setup_complete() -> bool:
@@ -198,14 +197,22 @@ def start_engine():
 
 
 def stop_engine():
-    """Stop the Kiyomi engine."""
+    """Stop the Kiyomi engine gracefully."""
     global _engine_thread
     if _engine_thread and _engine_thread.is_alive():
         logger.info("Stopping engine...")
-        # The thread is daemon, so it dies with the process.
-        # For graceful stop, we'd need a stop event — but daemon is fine for quit.
+        try:
+            from engine.bot import request_stop
+            request_stop()
+            # Give the engine thread time to shut down gracefully
+            _engine_thread.join(timeout=10)
+            if _engine_thread.is_alive():
+                logger.warning("Engine thread did not stop within 10s (daemon will die on exit)")
+            else:
+                logger.info("Engine stopped gracefully")
+        except Exception as e:
+            logger.warning(f"Error during engine stop: {e}")
         _engine_thread = None
-        logger.info("Engine stopped")
 
 
 def engine_running() -> bool:
@@ -243,7 +250,11 @@ class OnboardingHandler(BaseHTTPRequestHandler):
     
     def _send_file(self, filepath: str):
         """Serve a file from the onboarding directory."""
-        full_path = ONBOARDING_DIR / filepath
+        full_path = (ONBOARDING_DIR / filepath).resolve()
+        # Prevent path traversal outside the onboarding directory
+        if not str(full_path).startswith(str(ONBOARDING_DIR.resolve())):
+            self.send_error(403, "Forbidden")
+            return
         if not full_path.exists() or not full_path.is_file():
             self.send_error(404, "File not found")
             return
@@ -258,7 +269,11 @@ class OnboardingHandler(BaseHTTPRequestHandler):
 
     def _send_dashboard_file(self, filepath: str):
         """Serve a file from the dashboard directory."""
-        full_path = DASHBOARD_DIR / filepath
+        full_path = (DASHBOARD_DIR / filepath).resolve()
+        # Prevent path traversal outside the dashboard directory
+        if not str(full_path).startswith(str(DASHBOARD_DIR.resolve())):
+            self.send_error(403, "Forbidden")
+            return
         if not full_path.exists() or not full_path.is_file():
             self.send_error(404, "File not found")
             return
@@ -272,19 +287,14 @@ class OnboardingHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _handle_dashboard_data(self):
-        """Aggregate all user data for the life dashboard."""
-        import re as _re
-        from datetime import datetime as _dt, timedelta as _td
+        """Aggregate user data for the dashboard.
 
+        v5.0: Only returns config, identity, and cron info. The old memory
+        categories, skills, health, budget, tasks, habits, relationships,
+        and reminders were removed in v5.0.
+        """
         data = {
             "config": {},
-            "memory": {},
-            "health": {},
-            "budget": {},
-            "tasks": {},
-            "habits": {},
-            "relationships": {},
-            "reminders": {},
         }
 
         # --- Config ---
@@ -300,120 +310,30 @@ class OnboardingHandler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
-        # --- Memory ---
+        # --- Identity ---
         try:
-            memory_dir = CONFIG_DIR / "memory"
-            categories = {
-                "identity": "Identity", "family": "Family",
-                "work": "Work", "health": "Health",
-                "preferences": "Preferences", "goals": "Goals",
-                "schedule": "Schedule", "other": "Other",
-            }
-            cat_counts = {}
-            total_facts = 0
-            for key, display in categories.items():
-                fpath = memory_dir / f"{key}.md"
-                count = 0
-                if fpath.exists():
-                    for line in fpath.read_text(encoding="utf-8", errors="replace").splitlines():
-                        if line.strip().startswith("- "):
-                            count += 1
-                cat_counts[key] = {"name": display, "count": count}
-                total_facts += count
-
-            # Count conversations this week
-            convos_dir = memory_dir / "conversations"
-            convos_week = 0
-            if convos_dir.exists():
-                cutoff = _dt.now() - _td(days=7)
-                for f in convos_dir.iterdir():
-                    if f.suffix == ".md" and f.stat().st_mtime >= cutoff.timestamp():
-                        convos_week += 1
-
-            data["memory"] = {
-                "total_facts": total_facts,
-                "categories": cat_counts,
-                "conversations_this_week": convos_week,
-            }
-        except Exception:
-            pass
-
-        # --- Health ---
-        try:
-            health_file = CONFIG_DIR / "skills" / "health" / "data.json"
-            if health_file.exists():
-                with open(health_file) as f:
-                    data["health"] = json.load(f)
-            else:
-                data["health"] = {}
-        except Exception:
-            pass
-
-        # --- Budget / Financial Intelligence ---
-        try:
-            budget_file = CONFIG_DIR / "skills" / "budget" / "data.json"
-            fi_file = CONFIG_DIR / "skills" / "financial_intelligence" / "data.json"
-            if budget_file.exists():
-                with open(budget_file) as f:
-                    data["budget"] = json.load(f)
-            elif fi_file.exists():
-                with open(fi_file) as f:
-                    data["budget"] = json.load(f)
-            else:
-                data["budget"] = {}
-        except Exception:
-            pass
-
-        # --- Tasks ---
-        try:
-            tasks_file = CONFIG_DIR / "skills" / "tasks" / "data.json"
-            if tasks_file.exists():
-                with open(tasks_file) as f:
-                    raw = json.load(f)
-                tasks_list = raw.get("tasks", [])
-                open_tasks = [t for t in tasks_list if not t.get("done")]
-                done_tasks = [t for t in tasks_list if t.get("done")]
-                data["tasks"] = {
-                    "open": open_tasks,
-                    "completed": done_tasks,
-                    "open_count": len(open_tasks),
-                    "completed_count": len(done_tasks),
+            identity_file = CONFIG_DIR / "identity.md"
+            if identity_file.exists():
+                content = identity_file.read_text(encoding="utf-8", errors="replace")
+                data["identity"] = {
+                    "exists": True,
+                    "length": len(content),
+                    "preview": content[:500],
                 }
             else:
-                data["tasks"] = {"open": [], "completed": [], "open_count": 0, "completed_count": 0}
+                data["identity"] = {"exists": False}
         except Exception:
             pass
 
-        # --- Habits ---
+        # --- Cron Jobs ---
         try:
-            habits_file = CONFIG_DIR / "habits.json"
-            if habits_file.exists():
-                with open(habits_file) as f:
-                    data["habits"] = json.load(f)
+            cron_file = CONFIG_DIR / "cron.json"
+            if cron_file.exists():
+                with open(cron_file) as f:
+                    crons = json.load(f)
+                data["cron"] = {"count": len(crons), "jobs": crons}
             else:
-                data["habits"] = {}
-        except Exception:
-            pass
-
-        # --- Relationships ---
-        try:
-            rels_file = CONFIG_DIR / "relationships.json"
-            if rels_file.exists():
-                with open(rels_file) as f:
-                    data["relationships"] = json.load(f)
-            else:
-                data["relationships"] = {}
-        except Exception:
-            pass
-
-        # --- Reminders ---
-        try:
-            rem_file = CONFIG_DIR / "reminders.json"
-            if rem_file.exists():
-                with open(rem_file) as f:
-                    data["reminders"] = json.load(f)
-            else:
-                data["reminders"] = {}
+                data["cron"] = {"count": 0, "jobs": []}
         except Exception:
             pass
 
@@ -510,28 +430,20 @@ class OnboardingHandler(BaseHTTPRequestHandler):
                 self._send_json(500, {"error": str(e)})
             return
 
-        # API: config save
+        # API: config read (GET returns current config; save via POST only)
         if path == "/api/config":
-            params = parse_qs(parsed.query)
-            if "data" in params:
-                try:
-                    raw = base64.b64decode(params["data"][0])
-                    config = json.loads(raw)
-                    config["setup_complete"] = True
-                    with open(CONFIG_FILE, "w") as f:
-                        json.dump(config, f, indent=2)
-                    self._send_json(200, {"status": "ok"})
-                    if engine_running():
-                        logger.info("Config saved! Restarting app to apply changes...")
-                        threading.Thread(target=_restart_process, daemon=True).start()
-                    else:
-                        logger.info("Config saved! Starting engine...")
-                        threading.Thread(target=start_engine, daemon=True).start()
-                    return
-                except Exception as e:
-                    self._send_json(500, {"error": str(e)})
-                    return
-            self._send_json(400, {"error": "Missing data parameter"})
+            try:
+                config = load_config()
+                # Strip sensitive fields before returning
+                safe = {
+                    "name": config.get("name", ""),
+                    "cli": config.get("cli", ""),
+                    "timezone": config.get("timezone", ""),
+                    "setup_complete": config.get("setup_complete", False),
+                }
+                self._send_json(200, safe)
+            except Exception as e:
+                self._send_json(500, {"error": str(e)})
             return
         
         # Serve static files
@@ -631,7 +543,7 @@ class OnboardingHandler(BaseHTTPRequestHandler):
             "status": "online",
             "agent_id": "kiyomi",
             "name": "Kiyomi",
-            "uptime": time.time(),
+            "uptime_seconds": int(time.time() - _app_start_time),
         })
 
     def _handle_agent_info(self):

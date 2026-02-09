@@ -6,8 +6,9 @@ import json
 import logging
 import subprocess
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from engine.config import CONFIG_DIR, WORKSPACE, load_config
 from engine.cli_adapter import get_adapter, sync_identity_file, get_env
@@ -74,8 +75,18 @@ def run_cron(cron: dict):
 
 
 def tick():
-    """Check and run any due cron jobs. Call this once per minute."""
-    now = datetime.now()
+    """Check and run any due cron jobs. Call this once per minute.
+
+    Uses the user's configured timezone from config.json (default: America/New_York).
+    """
+    config = load_config()
+    tz_name = config.get("timezone", "America/New_York")
+    try:
+        tz = ZoneInfo(tz_name)
+    except (KeyError, Exception):
+        logger.warning(f"Invalid timezone '{tz_name}', falling back to UTC")
+        tz = timezone.utc
+    now = datetime.now(tz)
     for cron in load_crons():
         if should_run(cron, now):
             run_cron(cron)

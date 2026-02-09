@@ -19,7 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from telegram import Update, Bot
+from telegram import Update
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     ContextTypes, filters
@@ -28,7 +28,7 @@ from telegram.constants import ChatAction
 
 from engine.config import load_config, save_config, CONFIG_DIR, IDENTITY_FILE, WORKSPACE
 from engine.cli_adapter import get_adapter, sync_identity_file, get_env, detect_available_clis
-from engine.updater import is_update_request, check_for_updates, perform_update, restart_bot
+from engine.updater import check_for_updates, perform_update, restart_bot
 
 logger = logging.getLogger("kiyomi.bot")
 
@@ -48,8 +48,11 @@ def _load_sessions() -> dict:
 
 
 def _save_sessions(sessions: dict):
-    with open(SESSIONS_FILE, "w") as f:
-        json.dump(sessions, f, indent=2)
+    try:
+        with open(SESSIONS_FILE, "w") as f:
+            json.dump(sessions, f, indent=2)
+    except (IOError, OSError) as e:
+        logger.warning(f"Failed to save sessions: {e}")
 
 
 sessions = _load_sessions()
@@ -59,9 +62,18 @@ sessions = _load_sessions()
 def _find_new_files(workspace: Path, since: float) -> list[Path]:
     """Find files created in workspace since timestamp."""
     new_files = []
-    skip = {"CLAUDE.md", "AGENTS.md", "GEMINI.md", "identity.md", "sessions.json", "config.json"}
+    skip = {
+        "CLAUDE.md", "AGENTS.md", "GEMINI.md", "identity.md",
+        "sessions.json", "config.json", "cron.json", "reminders.json",
+        "relationships.json", "habits.json", "kiyomi.lock",
+    }
+    skip_ext = {".log", ".lock", ".pid"}
     for item in workspace.iterdir():
         if item.name.startswith(".") or item.name in skip:
+            continue
+        if item.suffix in skip_ext:
+            continue
+        if item.is_dir():
             continue
         if item.is_file() and item.stat().st_mtime > since:
             new_files.append(item)
@@ -77,7 +89,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cli = config.get("cli", "your AI")
 
     # Lock to this user on first contact
-    if not config.get("telegram_user_id"):
+    if not config.get("telegram_user_id") and update.effective_user:
         config["telegram_user_id"] = str(update.effective_user.id)
         save_config(config)
 
@@ -136,7 +148,10 @@ async def cmd_cli(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"{new_cli} CLI is not installed on this machine.")
             return
 
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    try:
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    except Exception:
+        await update.message.reply_text("\n".join(lines))
 
 
 async def cmd_identity(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -146,11 +161,18 @@ async def cmd_identity(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Truncate for Telegram
         if len(content) > 3500:
             content = content[:3500] + "\n\n... (truncated)"
-        await update.message.reply_text(
-            f"**Your assistant's identity:**\n\n```\n{content}\n```\n\n"
-            f"To change it, just tell me in plain English what you want me to do differently.",
-            parse_mode="Markdown"
-        )
+        try:
+            await update.message.reply_text(
+                f"**Your assistant's identity:**\n\n```\n{content}\n```\n\n"
+                f"To change it, just tell me in plain English what you want me to do differently.",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            # Markdown failed (e.g., backticks in identity content) — send plain text
+            await update.message.reply_text(
+                f"Your assistant's identity:\n\n{content}\n\n"
+                f"To change it, just tell me in plain English what you want me to do differently."
+            )
     else:
         await update.message.reply_text("No identity file found. Send me a message to get started!")
 
@@ -159,20 +181,31 @@ async def cmd_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Check for updates."""
     await update.message.reply_text("Checking for updates...")
     try:
-        has_update, info = check_for_updates()
-        if has_update:
+        info = await check_for_updates()
+        if info.get("available"):
             await update.message.reply_text(
-                f"Update available: v{info.get('version', '?')}\n"
-                f"{info.get('notes', '')}\n\n"
+                f"Update available: v{info.get('latest', '?')}\n"
+                f"{info.get('changes', '')}\n\n"
                 f"Downloading and installing..."
             )
-            perform_update(info)
-            await update.message.reply_text("Update installed! Restarting...")
-            restart_bot()
+            result = await perform_update()
+            if result.get("success"):
+                await update.message.reply_text(
+                    f"Update installed! {result.get('message', '')}\nRestarting..."
+                )
+                await restart_bot()
+            else:
+                await update.message.reply_text(f"Update failed: {result.get('message', 'Unknown error')}")
         else:
-            await update.message.reply_text("You're on the latest version!")
+            await update.message.reply_text(
+                f"You're on the latest version! ({info.get('current', '?')})"
+            )
     except Exception as e:
-        await update.message.reply_text(f"Update check failed: {e}")
+        logger.error(f"Update check failed: {e}", exc_info=True)
+        await update.message.reply_text(
+            "Couldn't check for updates right now. "
+            "Make sure you have an internet connection and try again later."
+        )
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -182,9 +215,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Auth check: only allow the configured user (or anyone if not set)
     allowed_user = config.get("telegram_user_id", "")
-    if allowed_user and str(update.effective_user.id) != allowed_user:
-        await update.message.reply_text("Sorry, this bot is private.")
-        return
+    if allowed_user:
+        if not update.effective_user:
+            # Channel posts or anonymous messages — reject
+            return
+        if str(update.effective_user.id) != allowed_user:
+            await update.message.reply_text("Sorry, this bot is private.")
+            return
 
     # Get CLI adapter
     cli_name = config.get("cli", "")
@@ -196,12 +233,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         adapter = get_adapter(cli_name)
-    except (ValueError, FileNotFoundError) as e:
-        await update.message.reply_text(f"CLI error: {e}")
+    except ValueError as e:
+        await update.message.reply_text(
+            f"Your AI provider ({cli_name}) isn't recognized. "
+            f"Use /cli to switch to a supported provider (claude, codex, or gemini)."
+        )
+        return
+    except FileNotFoundError as e:
+        await update.message.reply_text(
+            f"The {cli_name} CLI isn't installed on this machine. "
+            f"Use /cli to switch providers, or install it from the setup wizard."
+        )
         return
 
     # Build the message text
     message_text = update.message.text or update.message.caption or ""
+
+    # Track all temp files for cleanup
+    temp_files = []
 
     # Handle photos
     image_path = None
@@ -209,8 +258,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo = update.message.photo[-1]  # Highest resolution
         photo_file = await photo.get_file()
         tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False, dir=str(WORKSPACE))
+        tmp.close()  # Close before download_to_drive writes to it
         await photo_file.download_to_drive(tmp.name)
         image_path = tmp.name
+        temp_files.append(tmp.name)
         if not message_text:
             message_text = "Describe this image in detail."
 
@@ -220,7 +271,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         doc_file = await doc.get_file()
         ext = Path(doc.file_name).suffix if doc.file_name else ".bin"
         tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False, dir=str(WORKSPACE))
+        tmp.close()  # Close before download_to_drive writes to it
         await doc_file.download_to_drive(tmp.name)
+        temp_files.append(tmp.name)
         if not message_text:
             message_text = f"Analyze this file: {tmp.name}"
         else:
@@ -231,7 +284,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         voice = update.message.voice
         voice_file = await voice.get_file()
         tmp = tempfile.NamedTemporaryFile(suffix=".ogg", delete=False, dir=str(WORKSPACE))
+        tmp.close()  # Close before download_to_drive writes to it
         await voice_file.download_to_drive(tmp.name)
+        temp_files.append(tmp.name)
         message_text = f"Transcribe and respond to this voice message: {tmp.name}"
 
     if not message_text:
@@ -256,7 +311,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             image_path=image_path,
         )
     except FileNotFoundError as e:
-        await update.message.reply_text(f"CLI not found: {e}")
+        # Clean up temp files before returning
+        for tmp_path in temp_files:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        await update.message.reply_text(
+            f"The {cli_name} CLI isn't installed. "
+            f"Use /cli to switch to a different AI provider, or reinstall it."
+        )
         return
 
     logger.info(f"[{cli_name}] Running: {' '.join(cmd[:4])}...")
@@ -287,12 +351,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response_text = f"The AI took too long to respond (>{timeout}s timeout). Try a shorter message or /reset."
     except Exception as e:
         logger.error(f"CLI error: {e}", exc_info=True)
-        response_text = f"Error calling {cli_name}: {e}"
+        response_text = (
+            f"Something went wrong while talking to {cli_name}. "
+            f"Try again, or use /reset to start a fresh conversation. "
+            f"If this keeps happening, try /cli to switch AI providers."
+        )
 
-    # Clean up temp image
-    if image_path:
+    # Clean up all temp files (photos, documents, voice)
+    for tmp_path in temp_files:
         try:
-            os.unlink(image_path)
+            os.unlink(tmp_path)
         except OSError:
             pass
 
@@ -313,7 +381,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for f in new_files[:5]:  # Max 5 files
         try:
             if f.stat().st_size < 10_000_000:  # <10MB
-                await update.message.reply_document(document=open(f, "rb"), filename=f.name)
+                with open(f, "rb") as fh:
+                    await update.message.reply_document(document=fh, filename=f.name)
         except Exception as e:
             logger.warning(f"Failed to send file {f.name}: {e}")
 
@@ -327,9 +396,13 @@ def _split_message(text: str, max_len: int = 4000) -> list[str]:
         if len(text) <= max_len:
             chunks.append(text)
             break
-        # Try to split at a newline
+        # Try to split at a newline first
         split_at = text.rfind("\n", 0, max_len)
         if split_at == -1:
+            # No newline — try splitting at a space to avoid mid-word breaks
+            split_at = text.rfind(" ", 0, max_len)
+        if split_at == -1:
+            # No space either — hard split at max_len
             split_at = max_len
         chunks.append(text[:split_at])
         text = text[split_at:].lstrip("\n")
@@ -387,11 +460,29 @@ def main():
     app.run_polling(drop_pending_updates=True)
 
 
+# Module-level stop event and loop reference for clean shutdown from app.py
+_stop_event: asyncio.Event | None = None
+_engine_loop: asyncio.AbstractEventLoop | None = None
+
+
+def request_stop():
+    """Request the threaded engine to stop gracefully.
+
+    Safe to call from any thread. The engine's async loop will
+    pick up the event and shut down the Telegram polling.
+    """
+    global _stop_event, _engine_loop
+    if _stop_event and _engine_loop and _engine_loop.is_running():
+        _engine_loop.call_soon_threadsafe(_stop_event.set)
+
+
 def main_threaded():
     """Start the bot from a background thread (no signal handlers).
 
     Used when running inside the PyInstaller menu bar app.
     """
+    global _stop_event, _engine_loop
+
     app = _build_app()
     if not app:
         raise RuntimeError("No Telegram token configured")
@@ -400,20 +491,28 @@ def main_threaded():
     logger.info(f"Kiyomi v5.0 starting (threaded) — CLI: {config.get('cli', '?')}")
 
     async def _run():
+        global _stop_event
+        _stop_event = asyncio.Event()
         await app.initialize()
         await app.start()
         await app.updater.start_polling(drop_pending_updates=True)
         logger.info("Kiyomi is running! Waiting for messages...")
         try:
-            await asyncio.Event().wait()
+            await _stop_event.wait()
         finally:
+            logger.info("Shutting down Telegram polling...")
             await app.updater.stop()
             await app.stop()
             await app.shutdown()
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(_run())
+    _engine_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(_engine_loop)
+    try:
+        _engine_loop.run_until_complete(_run())
+    finally:
+        _engine_loop.close()
+        _engine_loop = None
+        _stop_event = None
 
 
 if __name__ == "__main__":

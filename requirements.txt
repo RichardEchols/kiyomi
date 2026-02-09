@@ -1,14 +1,5 @@
-# Kiyomi v4.0 — Python Dependencies
+# Kiyomi v5.0 — Python Dependencies
 # Core (required for bot to start)
 python-telegram-bot[job-queue]>=21.0
 pytz>=2024.1
 rumps>=0.4.0
-
-# AI Providers (guarded imports — installed but won't crash if unused)
-anthropic>=0.40.0
-google-genai>=1.0.0
-openai>=1.0.0
-
-# Optional features (guarded imports — installed for full functionality)
-requests>=2.31.0
-pillow>=10.0.0
