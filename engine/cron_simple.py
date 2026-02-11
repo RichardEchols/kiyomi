@@ -2,6 +2,8 @@
 Kiyomi v5.0 — Simple Cron Runner
 Reads ~/.kiyomi/cron.json and fires messages via CLI at scheduled times.
 """
+from __future__ import annotations
+
 import json
 import logging
 import subprocess

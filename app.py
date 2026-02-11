@@ -104,6 +104,8 @@ def load_config() -> dict:
 _engine_thread = None
 _engine_retries = 0
 _MAX_ENGINE_RETRIES = 3
+_last_engine_failure = 0.0
+_ENGINE_RETRY_COOLDOWN = 60  # Reset retry counter after 60 seconds
 
 
 def _restart_process():
@@ -129,22 +131,26 @@ def _restart_process():
 
 def start_engine():
     """Start the Kiyomi engine (Telegram bot) IN-PROCESS.
-    
+
     Runs the bot directly in a background thread using the PyInstaller-bundled
     packages. No subprocess, no pip install, no system Python needed.
     Works on any Mac — even ones with zero developer tools installed.
     """
-    global _engine_thread, _engine_retries, engine_process
-    
+    global _engine_thread, _engine_retries, engine_process, _last_engine_failure
+
     # Check if already running
     if _engine_thread and _engine_thread.is_alive():
         logger.info("Engine already running")
         return
-    
+
+    # Reset retry counter after cooldown period so we can try again
     if _engine_retries >= _MAX_ENGINE_RETRIES:
-        _dbg(f"Engine failed {_MAX_ENGINE_RETRIES} times, giving up")
-        logger.error("Engine failed to start after multiple attempts")
-        return
+        elapsed = time.time() - _last_engine_failure
+        if elapsed < _ENGINE_RETRY_COOLDOWN:
+            # Still in cooldown — don't spam logs, just return silently
+            return
+        _dbg(f"Retry cooldown expired ({elapsed:.0f}s), resetting retry counter")
+        _engine_retries = 0
 
     bot_path = ENGINE_DIR / "bot.py"
     if not bot_path.exists():
@@ -153,7 +159,7 @@ def start_engine():
 
     logger.info("Starting Kiyomi engine (in-process)...")
     _dbg(f"start_engine: ENGINE_DIR={ENGINE_DIR}")
-    
+
     # Add engine dir to path so engine modules can import each other
     engine_str = str(ENGINE_DIR)
     parent_str = str(ENGINE_DIR.parent)
@@ -161,9 +167,9 @@ def start_engine():
         sys.path.insert(0, engine_str)
     if parent_str not in sys.path:
         sys.path.insert(0, parent_str)
-    
+
     def _run_engine():
-        global _engine_retries
+        global _engine_retries, _last_engine_failure
         try:
             _dbg("Engine thread starting...")
             # Import the bot module from the bundled engine
@@ -172,7 +178,7 @@ def start_engine():
             for mod_name in list(sys.modules.keys()):
                 if mod_name.startswith('engine.'):
                     del sys.modules[mod_name]
-            
+
             from engine.bot import main_threaded
             _dbg("Bot module imported, calling main_threaded()...")
             main_threaded()
@@ -180,20 +186,21 @@ def start_engine():
             _dbg(f"Engine thread crashed: {type(e).__name__}: {e}")
             logger.error(f"Engine error: {e}", exc_info=True)
             _engine_retries += 1
-    
+            _last_engine_failure = time.time()
+
     _engine_thread = threading.Thread(target=_run_engine, daemon=True, name="kiyomi-engine")
     _engine_thread.start()
-    
-    # Quick check that it's alive after 2 seconds
-    import time
-    time.sleep(2)
+
+    # Give the engine more time to initialize (Telegram connection can be slow)
+    time.sleep(5)
     if _engine_thread.is_alive():
         _engine_retries = 0
-        _dbg("Engine thread alive after 2s ✓")
+        _dbg("Engine thread alive after 5s ✓")
         logger.info("Engine started successfully")
     else:
-        _dbg("Engine thread died within 2s!")
+        _dbg("Engine thread died within 5s!")
         _engine_retries += 1
+        _last_engine_failure = time.time()
 
 
 def stop_engine():
@@ -681,6 +688,9 @@ class OnboardingHandler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": "Missing 'provider' field"})
                 return
 
+            # Force re-auth during onboarding (first setup should always trigger OAuth)
+            force = data.get("force", False)
+
             sys.path.insert(0, str(ENGINE_DIR))
             sys.path.insert(0, str(ENGINE_DIR.parent))
             from engine.cli_installer import launch_cli_auth
@@ -688,7 +698,7 @@ class OnboardingHandler(BaseHTTPRequestHandler):
             import asyncio
             loop = asyncio.new_event_loop()
             try:
-                result = loop.run_until_complete(launch_cli_auth(provider))
+                result = loop.run_until_complete(launch_cli_auth(provider, force=force))
             finally:
                 loop.close()
 

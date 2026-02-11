@@ -164,12 +164,83 @@ async function detectCLIs() {
     }
 }
 
-function selectCli(cli) {
+async function selectCli(cli) {
     selectedCli = cli;
     document.querySelectorAll('.cli-card').forEach(el => {
         el.classList.toggle('selected', el.dataset.cli === cli);
     });
-    document.getElementById('btn-step2-next').disabled = false;
+
+    // Check if this CLI is authenticated — if not, trigger OAuth
+    try {
+        const res = await fetch('/api/cli/status');
+        const data = await res.json();
+        const info = data.providers?.[cli] || {};
+
+        if (info.installed && !info.authenticated) {
+            // CLI installed but not authenticated — trigger OAuth
+            const authSection = document.getElementById('cli-auth-section');
+            if (authSection) {
+                const meta = CLI_META[cli] || {};
+                authSection.innerHTML = `
+                    <div style="text-align: center; margin-top: 16px; padding: 16px; background: rgba(255,255,255,0.05); border-radius: 12px;">
+                        <p style="font-size: 14px; color: var(--text-secondary); margin-bottom: 12px;">
+                            ${meta.name || cli} needs to be signed in with your ${meta.sub || 'subscription'}.
+                        </p>
+                        <button class="pool-btn" id="btn-cli-auth" onclick="triggerCliAuth('${cli}')">
+                            Sign In to ${meta.name || cli}
+                        </button>
+                        <div id="cli-auth-result" style="margin-top: 8px; font-size: 13px; color: var(--text-hint);"></div>
+                    </div>
+                `;
+                authSection.style.display = 'block';
+            }
+            // Allow proceeding even without auth (they can auth later)
+            document.getElementById('btn-step2-next').disabled = false;
+        } else {
+            // Already authenticated or not installed — hide auth section
+            const authSection = document.getElementById('cli-auth-section');
+            if (authSection) {
+                authSection.style.display = 'none';
+            }
+            document.getElementById('btn-step2-next').disabled = false;
+        }
+    } catch (e) {
+        console.error('CLI status check failed:', e);
+        document.getElementById('btn-step2-next').disabled = false;
+    }
+}
+
+async function triggerCliAuth(cli) {
+    const btn = document.getElementById('btn-cli-auth');
+    const result = document.getElementById('cli-auth-result');
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Opening sign-in...';
+    }
+    if (result) result.textContent = 'A browser window should open. Sign in with your account.';
+
+    try {
+        const res = await fetch('/api/cli/auth', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ provider: cli, force: true }),
+        });
+        const data = await res.json();
+
+        if (data.launched) {
+            if (result) result.innerHTML = '<span style="color: #4ade80;">Sign-in started! Complete it in your browser, then continue.</span>';
+        } else {
+            if (result) result.innerHTML = `<span style="color: #4ade80;">${data.detail || 'Already signed in!'}</span>`;
+        }
+    } catch (e) {
+        console.error('CLI auth failed:', e);
+        if (result) result.textContent = 'Auth failed. You can sign in later via Terminal.';
+    }
+
+    if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Try Again';
+    }
 }
 
 // --- Step 3: Telegram ---

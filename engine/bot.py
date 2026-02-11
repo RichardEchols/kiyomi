@@ -5,6 +5,8 @@ Telegram message → CLI subprocess → response back to Telegram.
 Works with Claude CLI, Codex CLI, and Gemini CLI.
 ~300 lines. No bloat.
 """
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
@@ -86,7 +88,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command."""
     config = load_config()
     name = config.get("name", "there")
-    cli = config.get("cli", "your AI")
+    cli = config.get("cli") or config.get("provider") or "your AI"
 
     # Lock to this user on first contact
     if not config.get("telegram_user_id") and update.effective_user:
@@ -116,7 +118,7 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_cli(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Switch CLI provider."""
     config = load_config()
-    current = config.get("cli", "none")
+    current = config.get("cli") or config.get("provider") or "none"
     available = detect_available_clis()
 
     lines = [f"Current CLI: **{current}**\n", "Available CLIs:"]
@@ -223,8 +225,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Sorry, this bot is private.")
             return
 
-    # Get CLI adapter
-    cli_name = config.get("cli", "")
+    # Get CLI adapter (support both v5 "cli" and v4 "provider" field names)
+    cli_name = config.get("cli") or config.get("provider") or ""
     if not cli_name:
         await update.message.reply_text(
             "No AI CLI configured. Open Kiyomi settings to set up your AI provider."
@@ -451,11 +453,12 @@ def main():
         logger.error("No Telegram token. Run onboarding first.")
         sys.exit(1)
 
-    if not config.get("cli"):
+    cli_name = config.get("cli") or config.get("provider")
+    if not cli_name:
         logger.error("No CLI configured. Run onboarding first.")
         sys.exit(1)
 
-    logger.info(f"Kiyomi v5.0 starting — CLI: {config['cli']}")
+    logger.info(f"Kiyomi v5.0 starting — CLI: {cli_name}")
     app = _build_app()
     app.run_polling(drop_pending_updates=True)
 
@@ -488,7 +491,8 @@ def main_threaded():
         raise RuntimeError("No Telegram token configured")
 
     config = load_config()
-    logger.info(f"Kiyomi v5.0 starting (threaded) — CLI: {config.get('cli', '?')}")
+    cli_name = config.get("cli") or config.get("provider") or "?"
+    logger.info(f"Kiyomi v5.0 starting (threaded) — CLI: {cli_name}")
 
     async def _run():
         global _stop_event

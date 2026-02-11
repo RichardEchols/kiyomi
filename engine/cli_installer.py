@@ -190,11 +190,58 @@ def check_cli_auth_bool(provider: str) -> bool:
 # AUTH TRIGGER — launches browser-based OAuth flow
 # ═══════════════════════════════════════════════════════════════════
 
-async def launch_cli_auth(provider: str) -> dict:
+async def verify_cli_works(provider: str) -> bool:
+    """Actually run the CLI to verify it works (not just file-based check).
+
+    Returns True only if the CLI responds without auth errors.
+    """
+    cli_path = _which(provider)
+    if not cli_path:
+        return False
+
+    cfg = AUTH_CONFIG.get(provider)
+    if not cfg:
+        return False
+
+    # Use the auth_command to test — it's a simple prompt that should return quickly
+    test_cmd = cfg.get("auth_command")
+    if not test_cmd:
+        return False
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *test_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=_get_env(),
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        stderr_text = stderr.decode(errors="replace").lower()
+
+        # If the CLI exits with 0 and no auth errors, it works
+        if proc.returncode == 0:
+            return True
+
+        # Check for auth-related failures
+        if any(kw in stderr_text for kw in ("auth", "login", "sign in", "oauth", "unauthorized")):
+            return False
+
+        # Non-zero exit but not auth-related — could be other issue, assume not authed
+        return False
+    except (asyncio.TimeoutError, Exception) as e:
+        logger.debug(f"CLI verify failed for {provider}: {e}")
+        return False
+
+
+async def launch_cli_auth(provider: str, force: bool = False) -> dict:
     """Launch the CLI's native OAuth flow (opens browser for login).
 
     This triggers the subscription-based auth — the user logs in
     with their existing Claude/ChatGPT/Google account, no API keys needed.
+
+    Args:
+        provider: CLI provider name (claude, codex, gemini)
+        force: If True, skip the "already authenticated" check and always trigger OAuth
 
     Returns dict with:
         launched (bool): True if auth flow was triggered
@@ -218,12 +265,20 @@ async def launch_cli_auth(provider: str) -> dict:
         result["detail"] = f"{provider} CLI not installed"
         return result
 
-    # Already authenticated?
-    auth_status = check_cli_auth(provider)
-    if auth_status["authenticated"]:
-        result["launched"] = False
-        result["detail"] = f"Already authenticated: {auth_status['detail']}"
-        return result
+    # Check if already authenticated (skip if force=True)
+    if not force:
+        auth_status = check_cli_auth(provider)
+        if auth_status["authenticated"]:
+            # File-based check passed — verify it actually works
+            logger.info(f"{provider} file-based auth looks good, verifying with live test...")
+            if await verify_cli_works(provider):
+                result["launched"] = False
+                result["detail"] = f"Already authenticated: {auth_status['detail']}"
+                return result
+            else:
+                logger.warning(f"{provider} has credentials on disk but CLI test failed — forcing re-auth")
+    else:
+        logger.info(f"Force re-auth requested for {provider}")
 
     auth_cmd = cfg["auth_command"]
     logger.info(f"Launching {provider} OAuth flow: {' '.join(auth_cmd)}")

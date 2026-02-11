@@ -3,6 +3,8 @@ Kiyomi v5.0 — CLI Adapter Layer
 Thin adapters for calling Claude CLI, Codex CLI, and Gemini CLI.
 Each adapter knows how to build commands and parse responses.
 """
+from __future__ import annotations
+
 import json
 import logging
 import os
