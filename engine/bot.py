@@ -486,8 +486,15 @@ def main_threaded():
     """
     global _stop_event, _engine_loop
 
+    # Create event loop FIRST — Python 3.9 requires this before any
+    # asyncio objects (like Queue) can be created in a thread.
+    _engine_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(_engine_loop)
+
     app = _build_app()
     if not app:
+        _engine_loop.close()
+        _engine_loop = None
         raise RuntimeError("No Telegram token configured")
 
     config = load_config()
@@ -509,8 +516,6 @@ def main_threaded():
             await app.stop()
             await app.shutdown()
 
-    _engine_loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(_engine_loop)
     try:
         _engine_loop.run_until_complete(_run())
     finally:
